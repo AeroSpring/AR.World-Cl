@@ -23,12 +23,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.aerospring.arworld.feature.whereanythingis.ar.ArCameraView
 import com.aerospring.arworld.feature.whereanythingis.permissions.REQUIRED_AR_PERMISSIONS
 import com.aerospring.arworld.feature.whereanythingis.permissions.rememberArPermissionsGranted
 
 /**
  * Экран AR-сервиса "Где что находится".
- * Сейчас: запрос разрешений + заготовка под AR-сцену.
+ * Сейчас: запрос разрешений + живая камера ARCore.
  * Слайдер радиуса, категории, маркеры и лучи — на следующих шагах.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,8 +72,7 @@ fun WhereAnythingIsScreen(
             contentAlignment = Alignment.Center
         ) {
             if (permissionsGranted) {
-                // Следующий шаг: здесь появится ArSceneComposable с камерой ARCore
-                Text("Разрешения получены. AR-сцена появится здесь.")
+                ArCameraView(modifier = Modifier.fillMaxSize())
             } else {
                 Column {
                     Text("Для работы сервиса нужны доступ к камере и геолокации.")
