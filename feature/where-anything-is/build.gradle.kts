@@ -36,4 +36,9 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.material.icons.extended)
+
+    implementation(libs.google.arcore)
+    implementation(libs.sceneview.arsceneview)
+    implementation(libs.play.services.location)
+    implementation(libs.kotlinx.coroutines.android)
 }
