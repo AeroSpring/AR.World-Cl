@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+*/build/
+*/*/build/
+*/*/*/build/
+
+# Local config
+local.properties
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+.DS_Store
+
+# Keystore (никогда не коммить реальные ключи подписи)
+*.jks
+*.keystore
+
+# Captures / logs
+captures/
+.externalNativeBuild/
+.cxx/
