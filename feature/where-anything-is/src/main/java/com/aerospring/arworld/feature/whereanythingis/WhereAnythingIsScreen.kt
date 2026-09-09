@@ -23,14 +23,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.aerospring.arworld.core.data.model.defaultCategories
 import com.aerospring.arworld.feature.whereanythingis.ar.ArCameraView
+import com.aerospring.arworld.feature.whereanythingis.location.rememberUserLocation
 import com.aerospring.arworld.feature.whereanythingis.permissions.REQUIRED_AR_PERMISSIONS
 import com.aerospring.arworld.feature.whereanythingis.permissions.rememberArPermissionsGranted
+import com.aerospring.arworld.feature.whereanythingis.ui.TopControlPanel
+import com.aerospring.arworld.feature.whereanythingis.ui.radiusKmToSliderPosition
 
 /**
  * Экран AR-сервиса "Где что находится".
- * Сейчас: запрос разрешений + живая камера ARCore.
- * Слайдер радиуса, категории, маркеры и лучи — на следующих шагах.
+ * Сейчас: разрешения + камера ARCore + верхняя панель (радиус, категории) + позиция пользователя.
+ * Маркеры POI, лучи и карточка "снизу" по клику — на следующих шагах.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +54,11 @@ fun WhereAnythingIsScreen(
         permissionsGranted = result.values.all { it }
     }
 
+    // TODO: заменить дефолт 10 км на сохранённое значение из предыдущей сессии пользователя (DataStore) — след. шаги.
+    var sliderPosition by remember { mutableStateOf(radiusKmToSliderPosition(10.0)) }
+    var selectedCategoryIds by remember { mutableStateOf(defaultCategories.map { it.id }.toSet()) }
+    var categoriesExpanded by remember { mutableStateOf(true) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -68,13 +77,33 @@ fun WhereAnythingIsScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
-            contentAlignment = Alignment.Center
+                .padding(innerPadding)
         ) {
             if (permissionsGranted) {
+                val userLocation by rememberUserLocation()
+
                 ArCameraView(modifier = Modifier.fillMaxSize())
+
+                TopControlPanel(
+                    sliderPosition = sliderPosition,
+                    onSliderPositionChange = { sliderPosition = it },
+                    categories = defaultCategories,
+                    selectedCategoryIds = selectedCategoryIds,
+                    onCategoryToggle = { id ->
+                        selectedCategoryIds = if (id in selectedCategoryIds) {
+                            selectedCategoryIds - id
+                        } else {
+                            selectedCategoryIds + id
+                        }
+                    },
+                    categoriesExpanded = categoriesExpanded,
+                    onCategoriesExpandedToggle = { categoriesExpanded = !categoriesExpanded },
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+
+                // userLocation пока не используется визуально — понадобится на шаге с маркерами POI.
             } else {
-                Column {
+                Column(modifier = Modifier.align(Alignment.Center)) {
                     Text("Для работы сервиса нужны доступ к камере и геолокации.")
                     Button(onClick = { permissionLauncher.launch(REQUIRED_AR_PERMISSIONS) }) {
                         Text("Предоставить доступ")
