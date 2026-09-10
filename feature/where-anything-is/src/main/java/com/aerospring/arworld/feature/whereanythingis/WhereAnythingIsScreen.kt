@@ -122,15 +122,16 @@ fun WhereAnythingIsScreen(
                     modifier = Modifier.fillMaxSize()
                 )
 
-                if (calibratedHeadingDegrees == null) {
-                    Text(
-                        text = "Калибровка компаса...",
-                        color = androidx.compose.ui.graphics.Color.White,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(16.dp)
-                    )
-                }
+                // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
+                Text(
+                    text = "GPS: ${userLocation?.let { "%.5f, %.5f".format(it.latitude, it.longitude) } ?: "нет фикса"}\n" +
+                            "Азимут: ${calibratedHeadingDegrees?.let { "%.0f°".format(it) } ?: "калибруется..."}\n" +
+                            "Маркеров видно: ${visibleMarkers.size}",
+                    color = androidx.compose.ui.graphics.Color.Yellow,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 140.dp, start = 16.dp)
+                )
 
                 TopControlPanel(
                     sliderPosition = sliderPosition,
