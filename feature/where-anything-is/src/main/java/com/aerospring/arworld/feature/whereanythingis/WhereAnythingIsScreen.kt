@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.core.data.model.defaultCategories
 import com.aerospring.arworld.feature.whereanythingis.ar.ArCameraView
 import com.aerospring.arworld.feature.whereanythingis.location.rememberUserLocation
@@ -82,7 +83,54 @@ fun WhereAnythingIsScreen(
             if (permissionsGranted) {
                 val userLocation by rememberUserLocation()
 
-                ArCameraView(modifier = Modifier.fillMaxSize())
+                val radiusKm = com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm(sliderPosition)
+
+                // Калибровка компаса: фиксируем азимут ОДИН раз, в момент старта AR-сессии.
+                var arSessionCreated by remember { mutableStateOf(false) }
+                var calibratedHeadingDegrees by remember { mutableStateOf<Float?>(null) }
+                val liveHeadingDegrees by com.aerospring.arworld.feature.whereanythingis.location.rememberDeviceHeadingDegrees()
+
+                LaunchedEffect(arSessionCreated, liveHeadingDegrees) {
+                    if (arSessionCreated && calibratedHeadingDegrees == null) {
+                        liveHeadingDegrees?.let { calibratedHeadingDegrees = it }
+                    }
+                }
+
+                val visibleMarkers = remember(userLocation, radiusKm, selectedCategoryIds, calibratedHeadingDegrees) {
+                    val heading = calibratedHeadingDegrees
+                    val location = userLocation
+                    if (location != null && heading != null) {
+                        com.aerospring.arworld.feature.whereanythingis.ar.PoiMarkerCalculator.computeVisibleMarkers(
+                            userLat = location.latitude,
+                            userLon = location.longitude,
+                            pois = com.aerospring.arworld.core.data.repository.SamplePoiRepository.sampleAround(
+                                location.latitude, location.longitude
+                            ),
+                            radiusKm = radiusKm,
+                            selectedCategoryIds = selectedCategoryIds,
+                            headingDegrees = heading
+                        )
+                    } else {
+                        emptyList()
+                    }
+                }
+
+                ArCameraView(
+                    visibleMarkers = visibleMarkers,
+                    onMarkerClick = { /* TODO: карточка с инфо о маркере — следующий шаг */ },
+                    onSessionCreated = { arSessionCreated = true },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                if (calibratedHeadingDegrees == null) {
+                    Text(
+                        text = "Калибровка компаса...",
+                        color = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(16.dp)
+                    )
+                }
 
                 TopControlPanel(
                     sliderPosition = sliderPosition,

@@ -36,4 +36,17 @@ object GeoMath {
 
         return (Math.toDegrees(theta) + 360) % 360
     }
+
+    /**
+     * Смещение целевой точки относительно опорной в метрах восток/север (ENU),
+     * упрощённая проекция на основе дистанции+азимута — годится для AR-сцены,
+     * где важна локальная плоская геометрия вокруг пользователя.
+     */
+    fun localOffsetMeters(originLat: Double, originLon: Double, targetLat: Double, targetLon: Double): Pair<Double, Double> {
+        val distance = distanceMeters(originLat, originLon, targetLat, targetLon)
+        val bearingRad = Math.toRadians(bearingDegrees(originLat, originLon, targetLat, targetLon))
+        val east = distance * sin(bearingRad)
+        val north = distance * cos(bearingRad)
+        return east to north
+    }
 }
