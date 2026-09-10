@@ -49,7 +49,10 @@ object PoiMarkerCalculator {
                 val arZ = -(east * sinH + north * cosH)
 
                 val fraction = (distance / ABSOLUTE_MAX_RADIUS_METERS).toFloat().coerceIn(0f, 1f)
-                val scale = MAX_SCALE - (MAX_SCALE - MIN_SCALE) * fraction
+                val distanceScale = MAX_SCALE - (MAX_SCALE - MIN_SCALE) * fraction
+                // scaleMultiplier — ручная поправка администратора под конкретную 3D-модель
+                // (у разных .glb разный исходный масштаб).
+                val scale = distanceScale * poi.scaleMultiplier.toFloat()
 
                 VisibleMarker(
                     poi = poi,

@@ -1,18 +1,21 @@
 package com.aerospring.arworld.core.data.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
  * Точка интереса (POI) — маркер в AR-пространстве.
- * Пригодится для фичи "where-anything-is" уже на следующем шаге.
+ * Схема соответствует JSON-файлу на сервере администратора проекта
+ * (https://autoknowledge.tech/models/poiDatabase.json).
  */
 @Serializable
 data class Poi(
     val id: String,
     val title: String,
-    val latitude: Double,
-    val longitude: Double,
+    @SerialName("lat") val latitude: Double,
+    @SerialName("lng") val longitude: Double,
     val category: String,
-    val modelUrl: String,
-    val siteUrl: String? = null
+    @SerialName("url") val modelUrl: String,
+    val siteUrl: String? = null,
+    val scaleMultiplier: Double = 1.0
 )

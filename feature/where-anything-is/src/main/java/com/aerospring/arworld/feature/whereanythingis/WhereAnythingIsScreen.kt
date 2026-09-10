@@ -31,6 +31,9 @@ import com.aerospring.arworld.feature.whereanythingis.permissions.REQUIRED_AR_PE
 import com.aerospring.arworld.feature.whereanythingis.permissions.rememberArPermissionsGranted
 import com.aerospring.arworld.feature.whereanythingis.ui.TopControlPanel
 import com.aerospring.arworld.feature.whereanythingis.ui.radiusKmToSliderPosition
+import androidx.compose.material3.CircularProgressIndicator
+import com.aerospring.arworld.core.data.repository.PoiFetchResult
+import com.aerospring.arworld.core.data.repository.RemotePoiRepository
 
 /**
  * Экран AR-сервиса "Где что находится".
@@ -85,6 +88,12 @@ fun WhereAnythingIsScreen(
 
                 val radiusKm = com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm(sliderPosition)
 
+                // Загрузка боевой базы POI с сервера администратора — один раз при заходе на экран.
+                var poiFetchResult by remember { mutableStateOf<PoiFetchResult?>(null) }
+                LaunchedEffect(Unit) {
+                    poiFetchResult = RemotePoiRepository.fetchAll()
+                }
+
                 // Калибровка компаса: фиксируем азимут ОДИН раз, в момент старта AR-сессии.
                 var arSessionCreated by remember { mutableStateOf(false) }
                 var calibratedHeadingDegrees by remember { mutableStateOf<Float?>(null) }
@@ -96,16 +105,15 @@ fun WhereAnythingIsScreen(
                     }
                 }
 
-                val visibleMarkers = remember(userLocation, radiusKm, selectedCategoryIds, calibratedHeadingDegrees) {
+                val visibleMarkers = remember(userLocation, radiusKm, selectedCategoryIds, calibratedHeadingDegrees, poiFetchResult) {
                     val heading = calibratedHeadingDegrees
                     val location = userLocation
-                    if (location != null && heading != null) {
+                    val fetchResult = poiFetchResult
+                    if (location != null && heading != null && fetchResult is PoiFetchResult.Success) {
                         com.aerospring.arworld.feature.whereanythingis.ar.PoiMarkerCalculator.computeVisibleMarkers(
                             userLat = location.latitude,
                             userLon = location.longitude,
-                            pois = com.aerospring.arworld.core.data.repository.SamplePoiRepository.sampleAround(
-                                location.latitude, location.longitude
-                            ),
+                            pois = fetchResult.pois,
                             radiusKm = radiusKm,
                             selectedCategoryIds = selectedCategoryIds,
                             headingDegrees = heading
@@ -123,15 +131,31 @@ fun WhereAnythingIsScreen(
                 )
 
                 // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
+                // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
                 Text(
-                    text = "GPS: ${userLocation?.let { "%.5f, %.5f".format(it.latitude, it.longitude) } ?: "нет фикса"}\n" +
+                    text = " " +
+                            " " +
+                            "GPS: ${userLocation?.let { "%.5f, %.5f".format(it.latitude, it.longitude) } ?: "нет фикса"}\n" +
                             "Азимут: ${calibratedHeadingDegrees?.let { "%.0f°".format(it) } ?: "калибруется..."}\n" +
+                            "База POI: ${when (val result = poiFetchResult) {
+                                null -> "загружается..."
+                                is PoiFetchResult.Success -> "${result.pois.size} точек"
+                                is PoiFetchResult.Error -> "ошибка: ${result.message}"
+                            }}\n" +
                             "Маркеров видно: ${visibleMarkers.size}",
                     color = androidx.compose.ui.graphics.Color.Yellow,
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(top = 140.dp, start = 16.dp)
                 )
+
+                if (poiFetchResult == null) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(8.dp)
+                    )
+                }
 
                 TopControlPanel(
                     sliderPosition = sliderPosition,
