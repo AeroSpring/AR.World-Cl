@@ -2,6 +2,8 @@ package com.aerospring.arworld.feature.whereanythingis.ar
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
@@ -32,6 +34,7 @@ import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberViewNodeManager
 import io.github.sceneview.math.Rotation
+import android.util.Log
 
 private const val MARKER_HEIGHT_METERS = 4f
 private const val MARKER_RADIUS_METERS = 0.3f
@@ -58,6 +61,13 @@ fun ArCameraView(
     val viewNodeWindowManager = rememberViewNodeManager()
 
     val nodeToMarker = remember { mutableMapOf<Node, VisibleMarker>() }
+
+    // Все загрузки .glb идут через ОДИН поток: Filament не потокобезопасен, а параллельные
+    // вызовы modelLoader из разных потоков пула Dispatchers.IO вызывали гонки — отсюда
+    // терялись модели и случались крэши при частом переключении категорий...
+    // Небольшой пул вместо одного потока — избегаем гонок в Filament (не потокобезопасен),
+    // но не даём одной "тяжёлой" модели блокировать очередь остальных.
+    val modelLoadDispatcher = remember { Dispatchers.IO.limitedParallelism(3) }
 
     ARSceneView(
         modifier = modifier.fillMaxSize(),
@@ -99,45 +109,44 @@ fun ArCameraView(
                 var modelLoadError by remember(visible.poi.id) { mutableStateOf<String?>(null) }
 
                 androidx.compose.runtime.LaunchedEffect(visible.poi.id) {
+                    Log.d("ArDebug", "[${visible.poi.id}] LaunchedEffect СТАРТ, url=${visible.poi.modelUrl}")
                     try {
-                        // Принудительно уводим на IO-поток: loadModelInstanceAsync, судя по
-                        // фризу интерфейса при вызове с главного потока, часть работы делает
-                        // синхронно несмотря на название.
-                        withContext(Dispatchers.IO) {
-                            modelLoader.loadModelInstanceAsync(visible.poi.modelUrl) { instance ->
-                                if (instance != null) {
-                                    modelInstance = instance
-                                } else {
-                                    modelLoadError = "loadModelInstanceAsync вернул null"
+                        withTimeout(45_000) {
+                            withContext(modelLoadDispatcher) {
+                                Log.d("ArDebug", "[${visible.poi.id}] вызываю loadModelInstanceAsync")
+                                modelLoader.loadModelInstanceAsync(visible.poi.modelUrl) { instance ->
+                                    if (instance != null) {
+                                        Log.d("ArDebug", "[${visible.poi.id}] УСПЕХ, instance получен")
+                                        modelInstance = instance
+                                    } else {
+                                        Log.d("ArDebug", "[${visible.poi.id}] колбэк вернул null")
+                                        modelLoadError = "loadModelInstanceAsync вернул null"
+                                    }
                                 }
+                                Log.d("ArDebug", "[${visible.poi.id}] loadModelInstanceAsync ВЕРНУЛ УПРАВЛЕНИЕ (не факт, что готово)")
                             }
                         }
+                    } catch (e: TimeoutCancellationException) {
+                        Log.e("ArDebug", "[${visible.poi.id}] ТАЙМАУТ", e)
+                        modelLoadError = "Таймаут загрузки модели (45с) — файл слишком большой или сервер отвечает медленно"
                     } catch (e: Exception) {
+                        Log.e("ArDebug", "[${visible.poi.id}] ИСКЛЮЧЕНИЕ: ${e::class.simpleName}: ${e.message}", e)
                         modelLoadError = e.message ?: "Ошибка загрузки 3D-модели"
                     }
                 }
 
                 val currentModelInstance = modelInstance
                 if (currentModelInstance != null) {
-                    ModelNode(
+                    Log.d("ArDebug", "[${visible.poi.id}] РИСУЮ ModelNode, scale=${MARKER_BASE_SIZE_METERS * visible.scale}, pos=(${visible.arXMeters}, $MARKER_HEIGHT_METERS, ${visible.arZMeters})")
                         modelInstance = currentModelInstance,
                         scaleToUnits = MARKER_BASE_SIZE_METERS * visible.scale,
                         position = Position(visible.arXMeters, MARKER_HEIGHT_METERS, visible.arZMeters),
-                        apply = { nodeToMarker[this] = visible }
+                        apply = {
+                            Log.d("ArDebug", "[${visible.poi.id}] ModelNode apply{} вызван — узел реально создан движком")
+                            nodeToMarker[this] = visible
+                        }
                     )
                 } else {
-                    // Пока модель не готова — временная заглушка-цилиндр на её будущем месте.
-                    val markerMaterial = remember(visible.poi.id) {
-                        materialLoader.createUnlitColorInstance(color)
-                    }
-                    CylinderNode(
-                        radius = MARKER_RADIUS_METERS * visible.scale,
-                        height = MARKER_RADIUS_METERS * 2 * visible.scale,
-                        position = Position(visible.arXMeters, MARKER_HEIGHT_METERS, visible.arZMeters),
-                        materialInstance = markerMaterial,
-                        apply = { nodeToMarker[this] = visible }
-                    )
-
                     val statusText = modelLoadError?.let { "Ошибка модели: $it" }
                         ?: when (val state = downloadState) {
                             is GlbDownloadState.Progress -> "Загрузка ${state.percent}%"
@@ -159,7 +168,8 @@ fun ArCameraView(
                             MARKER_HEIGHT_METERS + BADGE_VERTICAL_OFFSET_METERS,
                             visible.arZMeters
                         ),
-                        rotation = Rotation(y = badgeYawDegrees)
+                        rotation = Rotation(y = badgeYawDegrees),
+                        scale = io.github.sceneview.math.Scale(3f, 3f, 3f)
                     ) {
                         MarkerLoadingBadge(title = visible.poi.title, statusText = statusText)
                     }
