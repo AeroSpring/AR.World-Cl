@@ -1,5 +1,7 @@
 package com.aerospring.arworld.feature.whereanythingis.ar
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
@@ -98,11 +100,16 @@ fun ArCameraView(
 
                 androidx.compose.runtime.LaunchedEffect(visible.poi.id) {
                     try {
-                        modelLoader.loadModelInstanceAsync(visible.poi.modelUrl) { instance ->
-                            if (instance != null) {
-                                modelInstance = instance
-                            } else {
-                                modelLoadError = "loadModelInstanceAsync вернул null"
+                        // Принудительно уводим на IO-поток: loadModelInstanceAsync, судя по
+                        // фризу интерфейса при вызове с главного потока, часть работы делает
+                        // синхронно несмотря на название.
+                        withContext(Dispatchers.IO) {
+                            modelLoader.loadModelInstanceAsync(visible.poi.modelUrl) { instance ->
+                                if (instance != null) {
+                                    modelInstance = instance
+                                } else {
+                                    modelLoadError = "loadModelInstanceAsync вернул null"
+                                }
                             }
                         }
                     } catch (e: Exception) {
