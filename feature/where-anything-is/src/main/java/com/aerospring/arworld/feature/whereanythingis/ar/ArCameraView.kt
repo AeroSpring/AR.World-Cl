@@ -6,6 +6,8 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -27,11 +29,14 @@ import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberViewNodeManager
+import io.github.sceneview.math.Rotation
 
 private const val MARKER_HEIGHT_METERS = 4f
 private const val MARKER_RADIUS_METERS = 0.3f
 private const val RAY_RADIUS_METERS = 0.02f
 private const val BADGE_VERTICAL_OFFSET_METERS = 0.6f
+/** Опорный "нормальный" размер маркера в метрах — все .glb вписываются в эту высоту, независимо от их родного масштаба в файле. */
+private const val MARKER_BASE_SIZE_METERS = 3.0f
 
 /**
  * Живой фид камеры ARCore + реальные анимированные .glb модели (ModelNode) на месте POI,
@@ -76,21 +81,40 @@ fun ArCameraView(
                     materialLoader.createUnlitColorInstance(color)
                 }
 
-                // Собственное отслеживание прогресса (для честной плашки "Загрузка N%") —
-                // параллельно тому, как сам SceneView качает и кэширует модель ниже.
+                // Единственная загрузка: наш GlbDownloader качает файл на диск с прогрессом.
                 val downloadState by produceState<GlbDownloadState>(
                     initialValue = GlbDownloadState.Progress(0),
                     key1 = visible.poi.modelUrl
                 ) {
                     GlbDownloader.download(context, visible.poi.modelUrl).collect { value = it }
                 }
+                // Явная загрузка ModelInstance напрямую по https-URL (документированный,
+                // проверенный путь) — с колбэком, чтобы видеть реальный успех/ошибку,
+                // а не тихое зависание, как было у rememberModelInstance для этого случая.
+                var modelInstance by remember(visible.poi.id) {
+                    mutableStateOf<io.github.sceneview.model.ModelInstance?>(null)
+                }
+                var modelLoadError by remember(visible.poi.id) { mutableStateOf<String?>(null) }
 
-                val modelInstance = rememberModelInstance(modelLoader, visible.poi.modelUrl)
+                androidx.compose.runtime.LaunchedEffect(visible.poi.id) {
+                    try {
+                        modelLoader.loadModelInstanceAsync(visible.poi.modelUrl) { instance ->
+                            if (instance != null) {
+                                modelInstance = instance
+                            } else {
+                                modelLoadError = "loadModelInstanceAsync вернул null"
+                            }
+                        }
+                    } catch (e: Exception) {
+                        modelLoadError = e.message ?: "Ошибка загрузки 3D-модели"
+                    }
+                }
 
-                if (modelInstance != null) {
+                val currentModelInstance = modelInstance
+                if (currentModelInstance != null) {
                     ModelNode(
-                        modelInstance = modelInstance,
-                        scale = Scale(visible.scale, visible.scale, visible.scale),
+                        modelInstance = currentModelInstance,
+                        scaleToUnits = MARKER_BASE_SIZE_METERS * visible.scale,
                         position = Position(visible.arXMeters, MARKER_HEIGHT_METERS, visible.arZMeters),
                         apply = { nodeToMarker[this] = visible }
                     )
@@ -107,7 +131,19 @@ fun ArCameraView(
                         apply = { nodeToMarker[this] = visible }
                     )
 
-                    val percent = (downloadState as? GlbDownloadState.Progress)?.percent ?: 0
+                    val statusText = modelLoadError?.let { "Ошибка модели: $it" }
+                        ?: when (val state = downloadState) {
+                            is GlbDownloadState.Progress -> "Загрузка ${state.percent}%"
+                            is GlbDownloadState.Done -> "Готово, ждём модель..."
+                            is GlbDownloadState.Error -> "Ошибка: ${state.message}"
+                        }
+                    // Разворот плашки "лицом" в сторону начала координат AR-сцены (примерно
+                    // туда, где стоял пользователь при калибровке) — статический расчёт вместо
+                    // billboard-обёртки, которой нет в этой версии библиотеки для произвольного контента.
+                    val badgeYawDegrees = Math.toDegrees(
+                        kotlin.math.atan2(-visible.arXMeters.toDouble(), -visible.arZMeters.toDouble())
+                    ).toFloat()
+
                     ViewNode(
                         windowManager = viewNodeWindowManager,
                         unlit = true,
@@ -115,9 +151,10 @@ fun ArCameraView(
                             visible.arXMeters,
                             MARKER_HEIGHT_METERS + BADGE_VERTICAL_OFFSET_METERS,
                             visible.arZMeters
-                        )
+                        ),
+                        rotation = Rotation(y = badgeYawDegrees)
                     ) {
-                        MarkerLoadingBadge(title = visible.poi.title, percent = percent)
+                        MarkerLoadingBadge(title = visible.poi.title, statusText = statusText)
                     }
                 }
 
