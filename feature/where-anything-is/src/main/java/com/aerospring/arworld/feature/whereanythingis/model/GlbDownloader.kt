@@ -13,7 +13,7 @@ import java.security.MessageDigest
 
 /** Состояние загрузки одной .glb модели. */
 sealed class GlbDownloadState {
-    data class Progress(val percent: Int) : GlbDownloadState()
+    data class Progress(val percent: Int, val isMegabytes: Boolean = false) : GlbDownloadState()
     data class Done(val localFile: File) : GlbDownloadState()
     data class Error(val message: String) : GlbDownloadState()
 }
@@ -29,7 +29,7 @@ object GlbDownloader {
         val cacheFile = File(context.cacheDir, "glb_models/$fileName")
 
         if (cacheFile.exists() && cacheFile.length() > 0) {
-            trySend(GlbDownloadState.Progress(100))
+            trySend(GlbDownloadState.Progress(100, isMegabytes = false))
             trySend(GlbDownloadState.Done(cacheFile))
             close()
             return@callbackFlow
@@ -61,6 +61,14 @@ object GlbDownloader {
                             if (percent != lastReportedPercent) {
                                 lastReportedPercent = percent
                                 trySend(GlbDownloadState.Progress(percent))
+                            }
+                        } else {
+                            // Сервер не прислал Content-Length (частый случай для больших файлов) —
+                            // показываем мегабайты вместо процентов, лишь бы пользователь видел движение.
+                            val mb = downloadedBytes / (1024 * 1024)
+                            if (mb != lastReportedPercent) {
+                                lastReportedPercent = mb
+                                trySend(GlbDownloadState.Progress(mb, isMegabytes = true))
                             }
                         }
                     }
