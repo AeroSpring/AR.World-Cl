@@ -51,8 +51,6 @@ private const val MARKER_BASE_SIZE_METERS = 3.0f
 // камеры), поэтому её диапазон сознательно ограничен (coerceIn), чтобы дальние точки при
 // большом радиусе не превращались в гигантские полотна.
 private const val BADGE_REFERENCE_DISTANCE_METERS = 15f
-private const val BADGE_MIN_COMPENSATION = 0.7f
-private const val BADGE_MAX_COMPENSATION = 2.2f
 private const val BADGE_BASE_SCALE = 2.0f
 
 /**
@@ -168,8 +166,10 @@ fun ArCameraView(
                                 badgeHeight * badgeHeight +
                                 visible.arZMeters * visible.arZMeters
                     )
-                    val compensation = (badgeDistance3d / BADGE_REFERENCE_DISTANCE_METERS)
-                        .coerceIn(BADGE_MIN_COMPENSATION, BADGE_MAX_COMPENSATION)
+                    // Ограничение диапазона больше не нужно: позиция в сцене стабильна (не зависит
+                    // от слайдера радиуса), значит и компенсация может работать без искусственных
+                    // рамок — именно это и даёт истинно одинаковый видимый размер.
+                    val compensation = badgeDistance3d / BADGE_REFERENCE_DISTANCE_METERS
                     val badgeScale = BADGE_BASE_SCALE * compensation
 
                     ViewNode(
