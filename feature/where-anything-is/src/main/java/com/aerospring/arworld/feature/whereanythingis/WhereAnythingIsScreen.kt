@@ -185,7 +185,7 @@ fun WhereAnythingIsScreen(
                 }
 
                 // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
-                // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
+                /*
                 Text(
                     text = " " +
                             " " +
@@ -201,8 +201,7 @@ fun WhereAnythingIsScreen(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(top = 140.dp, start = 16.dp)
-                )
-
+                )*/
                 if (poiFetchResult == null) {
                     CircularProgressIndicator(
                         modifier = Modifier
