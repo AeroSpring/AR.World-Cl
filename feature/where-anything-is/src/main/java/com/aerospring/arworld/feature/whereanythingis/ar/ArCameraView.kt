@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
+import kotlin.math.sqrt
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
@@ -35,6 +36,7 @@ import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberViewNodeManager
 import io.github.sceneview.math.Rotation
 import com.aerospring.arworld.feature.whereanythingis.ui.categoryColor
+import com.aerospring.arworld.core.ui.theme.ArWorldTheme
 
 private const val MARKER_HEIGHT_METERS = 4f
 private const val MARKER_RADIUS_METERS = 0.3f
@@ -154,6 +156,12 @@ fun ArCameraView(
                         kotlin.math.atan2(-visible.arXMeters.toDouble(), -visible.arZMeters.toDouble())
                     ).toFloat()
 
+                    // Компенсация перспективы: плашка — обычный объект AR-сцены, значит
+                    // дальний маркер выглядел бы мельче. Увеличиваем её физически пропорционально
+                    // AR-дистанции, чтобы видимый размер на экране был одинаковым для всех.
+                    val arDistance = sqrt(visible.arXMeters * visible.arXMeters + visible.arZMeters * visible.arZMeters)
+                    val badgeScale = 0.9f * (arDistance / AR_MIN_DISPLAY_DISTANCE_METERS)
+
                     ViewNode(
                         windowManager = viewNodeWindowManager,
                         unlit = true,
@@ -163,9 +171,14 @@ fun ArCameraView(
                             visible.arZMeters
                         ),
                         rotation = Rotation(y = badgeYawDegrees),
-                        scale = io.github.sceneview.math.Scale(1.5f, 1.5f, 1.5f)
+                        scale = io.github.sceneview.math.Scale(badgeScale, badgeScale, badgeScale)
                     ) {
-                        MarkerLoadingBadge(statusText = statusText)
+                        // ViewNode рендерит контент в отдельном окне — наша тема туда не долетает
+                        // сама по себе, оборачиваем явно. Оверлей поверх камеры всегда тёмный —
+                        // так он лучше читается на живом видео независимо от системной темы устройства.
+                        ArWorldTheme(darkTheme = true) {
+                            MarkerLoadingBadge(statusText = statusText)
+                        }
                     }
                 }
 

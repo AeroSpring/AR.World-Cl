@@ -13,8 +13,7 @@ import androidx.compose.ui.unit.sp
 
 /**
  * Компактная плашка статуса загрузки — задача не в информативности, а в том, чтобы
- * привлечь внимание к месту, где идёт загрузка. Стиль соответствует верхней панели —
- * тот же alpha и отсутствие тени, для целостного коммерческого вида продукта.
+ * привлечь внимание к месту, где идёт загрузка. Стиль соответствует верхней панели.
  */
 @Composable
 fun MarkerLoadingBadge(statusText: String) {
@@ -26,9 +25,10 @@ fun MarkerLoadingBadge(statusText: String) {
     ) {
         Text(
             text = statusText,
-            fontSize = 26.sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontSize = 14.sp,
             textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
         )
     }
 }

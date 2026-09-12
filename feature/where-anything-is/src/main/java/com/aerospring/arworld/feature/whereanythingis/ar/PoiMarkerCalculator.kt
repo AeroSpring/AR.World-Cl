@@ -25,8 +25,8 @@ private const val MAX_SCALE = 1f
 
 // Реальные расстояния (метры, могут достигать 1000 км) сжимаются в этот диапазон AR-сцены,
 // иначе дальние объекты физически неразличимы на экране независимо от масштаба модели.
-private const val AR_MIN_DISPLAY_DISTANCE_METERS = 5f
-private const val AR_MAX_DISPLAY_DISTANCE_METERS = 60f
+const val AR_MIN_DISPLAY_DISTANCE_METERS = 5f
+const val AR_MAX_DISPLAY_DISTANCE_METERS = 60f
 
 object PoiMarkerCalculator {
     fun computeVisibleMarkers(
