@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.CircularProgressIndicator
@@ -38,6 +39,9 @@ import com.aerospring.arworld.feature.whereanythingis.ui.radiusKmToSliderPositio
 import com.aerospring.arworld.core.data.repository.PoiFetchResult
 import com.aerospring.arworld.core.data.repository.RemotePoiRepository
 import com.aerospring.arworld.core.data.geo.GeoMath
+import com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm
+import com.aerospring.arworld.feature.whereanythingis.storage.RadiusPreferences
+import kotlinx.coroutines.delay
 
 /**
  * Экран AR-сервиса "Где что находится".
@@ -62,8 +66,17 @@ fun WhereAnythingIsScreen(
         permissionsGranted = result.values.all { it }
     }
 
-    // TODO: заменить дефолт 10 км на сохранённое значение из предыдущей сессии пользователя (DataStore) — след. шаги.
-    var sliderPosition by remember { mutableStateOf(radiusKmToSliderPosition(10.0)) }
+    val context = LocalContext.current
+    var sliderPosition by remember {
+        mutableStateOf(radiusKmToSliderPosition(RadiusPreferences.load(context, default = 10.0)))
+    }
+
+    // Сохраняем с небольшой задержкой после того, как пользователь перестал двигать ползунок —
+    // не пишем на диск на каждый пиксель перетаскивания.
+    LaunchedEffect(sliderPosition) {
+        delay(300)
+        RadiusPreferences.save(context, sliderPositionToRadiusKm(sliderPosition))
+    }
     var selectedCategoryIds by remember { mutableStateOf(defaultCategories.map { it.id }.toSet()) }
     var categoriesExpanded by remember { mutableStateOf(true) }
     var selectedMarker by remember { mutableStateOf<VisibleMarker?>(null) }
