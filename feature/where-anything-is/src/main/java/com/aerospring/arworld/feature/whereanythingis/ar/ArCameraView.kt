@@ -34,6 +34,7 @@ import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberViewNodeManager
 import io.github.sceneview.math.Rotation
+import com.aerospring.arworld.feature.whereanythingis.ui.categoryColor
 
 private const val MARKER_HEIGHT_METERS = 4f
 private const val MARKER_RADIUS_METERS = 0.3f
@@ -87,7 +88,7 @@ fun ArCameraView(
 
         visibleMarkers.forEach { visible ->
             key(visible.poi.id) {
-                val color = visible.poi.category.toMarkerColor()
+                val color = categoryColor(visible.poi.category)
                 val rayMaterial = remember(visible.poi.id) {
                     materialLoader.createUnlitColorInstance(color)
                 }
@@ -162,9 +163,9 @@ fun ArCameraView(
                             visible.arZMeters
                         ),
                         rotation = Rotation(y = badgeYawDegrees),
-                        scale = io.github.sceneview.math.Scale(3f, 3f, 3f)
+                        scale = io.github.sceneview.math.Scale(1.5f, 1.5f, 1.5f)
                     ) {
-                        MarkerLoadingBadge(title = visible.poi.title, statusText = statusText)
+                        MarkerLoadingBadge(statusText = statusText)
                     }
                 }
 
@@ -180,13 +181,4 @@ fun ArCameraView(
             }
         }
     }
-}
-
-/** Временная заглушка цвета по id категории — на следующем шаге свяжем с Category.colorHex. */
-private fun String.toMarkerColor(): Color = when (this) {
-    "auto" -> Color(0xFFFF6B6B)
-    "it" -> Color(0xFF4D96FF)
-    "beauty" -> Color(0xFFFF6FB5)
-    "med" -> Color(0xFF3ED598)
-    else -> Color(0xFFAAAAAA)
 }

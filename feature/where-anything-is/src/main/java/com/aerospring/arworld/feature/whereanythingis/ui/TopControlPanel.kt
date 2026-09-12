@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -110,10 +111,15 @@ fun TopControlPanel(
                 ) {
                     categories.forEach { category ->
                         val selected = category.id in selectedCategoryIds
+                        val chipColor = categoryColor(category.id)
                         FilterChip(
                             selected = selected,
                             onClick = { onCategoryToggle(category.id) },
-                            label = { Text(category.displayName) }
+                            label = { Text(category.displayName) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = chipColor,
+                                selectedLabelColor = androidx.compose.ui.graphics.Color.White
+                            )
                         )
                     }
                 }
