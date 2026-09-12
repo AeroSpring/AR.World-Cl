@@ -17,5 +17,9 @@ data class Poi(
     val category: String,
     @SerialName("url") val modelUrl: String,
     val siteUrl: String? = null,
-    val scaleMultiplier: Double = 1.0
+    val scaleMultiplier: Double = 1.0,
+    /** Ручная коррекция поворота модели вокруг оси X (градусы) — на случай, если .glb
+     * экспортирован с другой системой координат ("Z вверх" вместо "Y вверх") и оказывается
+     * "завален" на бок/носом вниз. По умолчанию 0 — коррекция не применяется. */
+    val rotationXDegrees: Double = 0.0
 )

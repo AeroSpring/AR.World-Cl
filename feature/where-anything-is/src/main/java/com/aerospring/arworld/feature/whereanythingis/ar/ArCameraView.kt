@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.aerospring.arworld.core.ui.theme.ArWorldTheme
@@ -17,6 +18,7 @@ import com.aerospring.arworld.feature.whereanythingis.model.GlbDownloadState
 import com.aerospring.arworld.feature.whereanythingis.model.GlbDownloader
 import com.aerospring.arworld.feature.whereanythingis.ui.MarkerLoadingBadge
 import com.aerospring.arworld.feature.whereanythingis.ui.categoryColor
+import com.aerospring.arworld.feature.whereanythingis.ar.VisibleMarker
 import com.google.ar.core.Config
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
@@ -61,6 +63,7 @@ private const val BADGE_BASE_SCALE = 2.0f
 fun ArCameraView(
     visibleMarkers: List<VisibleMarker>,
     onMarkerClick: (VisibleMarker) -> Unit,
+    onBackgroundClick: () -> Unit,
     onSessionCreated: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -70,6 +73,10 @@ fun ArCameraView(
     val materialLoader = rememberMaterialLoader(engine)
     val viewNodeWindowManager = rememberViewNodeManager()
 
+    // Не глобальная "очищай и заполняй заново каждый кадр" карта (это и было источником бага
+    // "кликается только одна модель") — вместо этого каждый маркер регистрирует себя сам через
+    // DisposableEffect, привязанный к жизненному циклу СВОЕГО узла: добавляется при создании,
+    // убирается только когда сам маркер реально покидает сцену (не на каждый кадр).
     val nodeToMarker = remember { mutableMapOf<Node, VisibleMarker>() }
 
     // Небольшой пул вместо одного потока: Filament не потокобезопасен (нужна сериализация),
@@ -86,13 +93,21 @@ fun ArCameraView(
         depthMode = Config.DepthMode.AUTOMATIC,
         onGestureListener = rememberOnGestureListener(
             onSingleTapConfirmed = { _, node ->
-                nodeToMarker[node]?.let(onMarkerClick)
+                // .glb модели часто состоят из нескольких дочерних узлов — тап может попасть
+                // в конкретную деталь геометрии, а не в корневой ModelNode, где мы регистрировали
+                // маркер. Поднимаемся по родителям, пока не найдём зарегистрированный узел.
+                var current: Node? = node
+                var marker: VisibleMarker? = null
+                while (current != null) {
+                    marker = nodeToMarker[current]
+                    if (marker != null) break
+                    current = current.parent
+                }
+                if (marker != null) onMarkerClick(marker) else onBackgroundClick()
             }
         ),
         onSessionCreated = { onSessionCreated() }
     ) {
-        nodeToMarker.clear()
-
         visibleMarkers.forEach { visible ->
             key(visible.poi.id) {
                 val color = categoryColor(visible.poi.category)
@@ -132,6 +147,13 @@ fun ArCameraView(
                     }
                 }
 
+                var markerNode by remember(visible.poi.id) { mutableStateOf<Node?>(null) }
+                DisposableEffect(markerNode) {
+                    val node = markerNode
+                    if (node != null) nodeToMarker[node] = visible
+                    onDispose { node?.let { nodeToMarker.remove(it) } }
+                }
+
                 val currentModelInstance = modelInstance
                 if (currentModelInstance != null) {
                     // Размер модели зависит ТОЛЬКО от visible.scale (реальная дистанция / 1000 км,
@@ -140,7 +162,8 @@ fun ArCameraView(
                         modelInstance = currentModelInstance,
                         scaleToUnits = MARKER_BASE_SIZE_METERS * visible.scale,
                         position = Position(visible.arXMeters, MARKER_HEIGHT_METERS, visible.arZMeters),
-                        apply = { nodeToMarker[this] = visible }
+                        rotation = Rotation(x = visible.poi.rotationXDegrees.toFloat()),
+                        apply = { markerNode = this }
                     )
                 } else {
                     val statusText = modelLoadError?.let { "Ошибка: $it" }

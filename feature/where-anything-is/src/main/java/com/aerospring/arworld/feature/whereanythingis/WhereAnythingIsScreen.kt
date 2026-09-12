@@ -24,6 +24,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.CircularProgressIndicator
+import com.aerospring.arworld.feature.whereanythingis.ar.VisibleMarker
+import com.aerospring.arworld.feature.whereanythingis.ui.MarkerInfoCard
 import com.aerospring.arworld.core.data.model.defaultCategories
 import com.aerospring.arworld.feature.whereanythingis.ar.ArCameraView
 import com.aerospring.arworld.feature.whereanythingis.location.rememberUserLocation
@@ -31,9 +35,9 @@ import com.aerospring.arworld.feature.whereanythingis.permissions.REQUIRED_AR_PE
 import com.aerospring.arworld.feature.whereanythingis.permissions.rememberArPermissionsGranted
 import com.aerospring.arworld.feature.whereanythingis.ui.TopControlPanel
 import com.aerospring.arworld.feature.whereanythingis.ui.radiusKmToSliderPosition
-import androidx.compose.material3.CircularProgressIndicator
 import com.aerospring.arworld.core.data.repository.PoiFetchResult
 import com.aerospring.arworld.core.data.repository.RemotePoiRepository
+import com.aerospring.arworld.core.data.geo.GeoMath
 
 /**
  * Экран AR-сервиса "Где что находится".
@@ -62,6 +66,7 @@ fun WhereAnythingIsScreen(
     var sliderPosition by remember { mutableStateOf(radiusKmToSliderPosition(10.0)) }
     var selectedCategoryIds by remember { mutableStateOf(defaultCategories.map { it.id }.toSet()) }
     var categoriesExpanded by remember { mutableStateOf(true) }
+    var selectedMarker by remember { mutableStateOf<VisibleMarker?>(null) }
 
     Scaffold(
         topBar = {
@@ -105,9 +110,32 @@ fun WhereAnythingIsScreen(
                     }
                 }
 
-                val visibleMarkers = remember(userLocation, radiusKm, selectedCategoryIds, calibratedHeadingDegrees, poiFetchResult) {
+                // "Заморозка" позиции: непрерывные обновления GPS (уточнение фикса через 1-2с
+                // после первого — обычное поведение Android) двигали и масштабировали всю AR-сцену
+                // на лету, из-за чего модели визуально "прыгали". Обновляем "заморозку" только
+                // когда пользователь реально сместился на существенное расстояние — так убираем
+                // и мелкий GPS-шум, и остаёмся актуальными при настоящей прогулке с телефоном.
+                val reAnchorThresholdMeters = 200.0
+                var stableUserLocation by remember { mutableStateOf<android.location.Location?>(null) }
+                LaunchedEffect(userLocation) {
+                    val newLocation = userLocation ?: return@LaunchedEffect
+                    val currentAnchor = stableUserLocation
+                    if (currentAnchor == null) {
+                        stableUserLocation = newLocation
+                    } else {
+                        val movedMeters = GeoMath.distanceMeters(
+                            currentAnchor.latitude, currentAnchor.longitude,
+                            newLocation.latitude, newLocation.longitude
+                        )
+                        if (movedMeters > reAnchorThresholdMeters) {
+                            stableUserLocation = newLocation
+                        }
+                    }
+                }
+
+                val visibleMarkers = remember(stableUserLocation, radiusKm, selectedCategoryIds, calibratedHeadingDegrees, poiFetchResult) {
                     val heading = calibratedHeadingDegrees
-                    val location = userLocation
+                    val location = stableUserLocation
                     val fetchResult = poiFetchResult
                     if (location != null && heading != null && fetchResult is PoiFetchResult.Success) {
                         com.aerospring.arworld.feature.whereanythingis.ar.PoiMarkerCalculator.computeVisibleMarkers(
@@ -125,10 +153,23 @@ fun WhereAnythingIsScreen(
 
                 ArCameraView(
                     visibleMarkers = visibleMarkers,
-                    onMarkerClick = { /* TODO: карточка с инфо о маркере — следующий шаг */ },
+                    onMarkerClick = { marker ->
+                        // Повторный тап по тому же маркеру — скрыть карточку; по другому — заменить.
+                        selectedMarker = if (selectedMarker?.poi?.id == marker.poi.id) null else marker
+                    },
+                    onBackgroundClick = { selectedMarker = null },
                     onSessionCreated = { arSessionCreated = true },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                selectedMarker?.let { marker ->
+                    MarkerInfoCard(
+                        marker = marker,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(16.dp)
+                    )
+                }
 
                 // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
                 // ВРЕМЕННО: диагностика состояния пайплайна маркеров.
