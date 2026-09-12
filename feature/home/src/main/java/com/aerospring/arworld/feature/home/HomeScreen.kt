@@ -14,6 +14,10 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -22,9 +26,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aerospring.arworld.feature.home.model.HomeTile
 import kotlinx.coroutines.launch
+import android.content.Intent
+import android.net.Uri
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,10 +55,13 @@ fun HomeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
+    val context = LocalContext.current
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("AR.Мир") })
         },
+        bottomBar = { ContactFooter() },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { innerPadding ->
         LazyVerticalGrid(
@@ -66,10 +77,9 @@ fun HomeScreen(
                 HomeTileCard(
                     tile = tile,
                     onClick = {
-                        val isReady = tile.route != null &&
-                                System.currentTimeMillis() >= tile.launchDateMillis
-                        if (isReady) {
-                            onTileClick(tile.route!!)
+                        val route = tile.route
+                        if (route != null && System.currentTimeMillis() >= tile.launchDateMillis) {
+                            onTileClick(route)
                         } else {
                             scope.launch {
                                 snackbarHostState.showSnackbar(
@@ -125,6 +135,65 @@ private fun HomeTileCard(
                     .align(Alignment.BottomCenter)
                     .padding(12.dp)
             )
+        }
+    }
+}
+
+/**
+ * Контактная плашка для потенциальных заказчиков размещения — закреплена внизу экрана
+ * (не прокручивается вместе с плитками), email и телефон кликабельны.
+ */
+@Composable
+private fun ContactFooter() {
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        HorizontalDivider()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "По вопросам размещения объявлений и материалов",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+            ) {
+                Text(
+                    text = "Aero.Spring@yandex.ru",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable {
+                        val intent = Intent(Intent.ACTION_SENDTO).apply {
+                            data = Uri.parse("mailto:Aero.Spring@yandex.ru")
+                        }
+                        context.startActivity(intent)
+                    }
+                )
+                Text(
+                    text = "+7 (900) 26-00-264",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clickable {
+                        val intent = Intent(Intent.ACTION_DIAL).apply {
+                            data = Uri.parse("tel:+79002600264")
+                        }
+                        context.startActivity(intent)
+                    }
+                )
+            }
         }
     }
 }
