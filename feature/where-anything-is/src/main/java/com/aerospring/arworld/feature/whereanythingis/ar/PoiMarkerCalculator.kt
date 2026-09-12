@@ -3,13 +3,15 @@ package com.aerospring.arworld.feature.whereanythingis.ar
 import com.aerospring.arworld.core.data.geo.GeoMath
 import com.aerospring.arworld.core.data.model.Poi
 import kotlin.math.cos
+import kotlin.math.ln
 import kotlin.math.sin
 
 /**
  * Готовая к отрисовке точка. arXMeters/arZMeters — это НЕ настоящее расстояние в метрах,
- * а сжатая в удобный для AR-обзора диапазон позиция (см. AR_MIN/MAX_DISPLAY_DISTANCE_METERS) —
- * иначе объекты на реальных километрах были бы физически неразличимы на экране.
- * distanceMeters — настоящая дистанция, для отображения пользователю (например, в карточке POI).
+ * а сжатая в удобный для AR-обзора диапазон позиция, вычисленная ИСКЛЮЧИТЕЛЬНО из абсолютной
+ * дистанции точки (не зависит от текущего радиуса слайдера!) — иначе при движении слайдера
+ * все видимые точки "плавали" бы по сцене, хотя их реальное положение не менялось.
+ * distanceMeters — настоящая дистанция, для отображения пользователю.
  */
 data class VisibleMarker(
     val poi: Poi,
@@ -23,8 +25,9 @@ private const val ABSOLUTE_MAX_RADIUS_METERS = 1000 * 1000.0
 private const val MIN_SCALE = 0.25f
 private const val MAX_SCALE = 1f
 
-// Реальные расстояния (метры, могут достигать 1000 км) сжимаются в этот диапазон AR-сцены,
-// иначе дальние объекты физически неразличимы на экране независимо от масштаба модели.
+// Реальные расстояния (от метров до 1000 км) сжимаются в этот диапазон AR-сцены по
+// ЛОГАРИФМИЧЕСКОЙ шкале от абсолютной дистанции — радиус слайдера тут ни при чём,
+// он влияет только на то, какие точки видимы (фильтрация), не на их позицию.
 const val AR_MIN_DISPLAY_DISTANCE_METERS = 5f
 const val AR_MAX_DISPLAY_DISTANCE_METERS = 60f
 
@@ -46,24 +49,24 @@ object PoiMarkerCalculator {
             .filter { it.category in selectedCategoryIds }
             .mapNotNull { poi ->
                 val distance = GeoMath.distanceMeters(userLat, userLon, poi.latitude, poi.longitude)
+                // Радиус используется ТОЛЬКО для фильтрации видимости — не для позиции в сцене.
                 if (distance > radiusMeters) return@mapNotNull null
 
                 val (east, north) = GeoMath.localOffsetMeters(userLat, userLon, poi.latitude, poi.longitude)
 
-                // Сжимаем дистанцию в AR-диапазон, сохраняя направление (просто укорачиваем вектор).
-                val distanceFraction = (distance / radiusMeters).coerceIn(0.0, 1.0)
+                // Логарифмическое сжатие от АБСОЛЮТНОЙ дистанции (0..1000 км), не от текущего радиуса.
+                val distanceKm = distance / 1000.0
+                val logFraction = (ln(distanceKm + 1.0) / ln(1000.0 + 1.0)).coerceIn(0.0, 1.0)
                 val compressedDistance = AR_MIN_DISPLAY_DISTANCE_METERS +
-                        (AR_MAX_DISPLAY_DISTANCE_METERS - AR_MIN_DISPLAY_DISTANCE_METERS) * distanceFraction
+                        (AR_MAX_DISPLAY_DISTANCE_METERS - AR_MIN_DISPLAY_DISTANCE_METERS) * logFraction
                 val compressionFactor = if (distance > 0.01) compressedDistance / distance else 1.0
                 val compressedEast = east * compressionFactor
                 val compressedNorth = north * compressionFactor
 
-                // Поворот сжатого геосмещения в локальный базис AR-сцены, привязанный к азимуту камеры.
                 val arX = compressedEast * cosH - compressedNorth * sinH
                 val arZ = -(compressedEast * sinH + compressedNorth * cosH)
 
-                // Масштаб модели по-прежнему считаем от НАСТОЯЩЕЙ дистанции (не сжатой) —
-                // так дальние объекты остаются визуально мельче, как и задумано в ТЗ.
+                // Масштаб модели — тоже от абсолютной дистанции, радиус-независим (без изменений).
                 val fraction = (distance / ABSOLUTE_MAX_RADIUS_METERS).toFloat().coerceIn(0f, 1f)
                 val distanceScale = MAX_SCALE - (MAX_SCALE - MIN_SCALE) * fraction
                 val scale = distanceScale * poi.scaleMultiplier.toFloat()
