@@ -148,6 +148,10 @@ fun ArCameraView(
                 }
 
                 var markerNode by remember(visible.poi.id) { mutableStateOf<Node?>(null) }
+                // Согласованный подъём: применяется одинаково к модели, плашке загрузки и
+                // верхней точке луча — так луч остаётся цельным независимо от того, насколько
+                // высоко поднята конкретная модель (по желанию заказчика, поле modelExceeding).
+                val effectiveHeight = MARKER_HEIGHT_METERS + visible.poi.modelExceeding.toFloat()
                 DisposableEffect(markerNode) {
                     val node = markerNode
                     if (node != null) nodeToMarker[node] = visible
@@ -161,7 +165,7 @@ fun ArCameraView(
                     ModelNode(
                         modelInstance = currentModelInstance,
                         scaleToUnits = MARKER_BASE_SIZE_METERS * visible.scale,
-                        position = Position(visible.arXMeters, MARKER_HEIGHT_METERS, visible.arZMeters),
+                        position = Position(visible.arXMeters, effectiveHeight, visible.arZMeters),
                         rotation = Rotation(x = visible.poi.rotationXDegrees.toFloat()),
                         apply = { markerNode = this }
                     )
@@ -183,7 +187,7 @@ fun ArCameraView(
 
                     // Полная 3D-дистанция ДО ПЛАШКИ (с учётом высоты подвеса), а не только
                     // горизонтальная — на близких точках высота даёт заметную ошибку без этого.
-                    val badgeHeight = MARKER_HEIGHT_METERS + BADGE_VERTICAL_OFFSET_METERS
+                    val badgeHeight = effectiveHeight + BADGE_VERTICAL_OFFSET_METERS
                     val badgeDistance3d = sqrt(
                         visible.arXMeters * visible.arXMeters +
                                 badgeHeight * badgeHeight +
@@ -214,7 +218,7 @@ fun ArCameraView(
                 // от того, готова модель или ещё показывается плашка загрузки.
                 TubeNode(
                     points = listOf(
-                        Position(visible.arXMeters, MARKER_HEIGHT_METERS, visible.arZMeters),
+                        Position(visible.arXMeters, effectiveHeight, visible.arZMeters),
                         Position(visible.arXMeters, 0f, visible.arZMeters)
                     ),
                     radius = RAY_RADIUS_METERS,

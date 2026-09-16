@@ -43,6 +43,13 @@ fun openSite(context: Context, url: String) {
     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
 }
 
+/** Открывает экран набора номера с уже подставленным телефоном — ACTION_DIAL, а не ACTION_CALL,
+ * чтобы не требовать разрешение CALL_PHONE: пользователь сам нажимает "Позвонить" в звонилке. */
+fun openPhoneCall(context: Context, phone: String) {
+    val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phone"))
+    context.startActivity(intent)
+}
+
 /** До 1 км — в метрах, дальше — в километрах с одним знаком после запятой до 10 км, иначе целым числом. */
 fun formatDistance(distanceMeters: Float): String = when {
     distanceMeters < 1000f -> "${distanceMeters.toInt()} м"
