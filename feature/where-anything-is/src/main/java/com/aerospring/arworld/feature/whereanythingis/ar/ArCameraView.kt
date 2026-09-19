@@ -147,15 +147,18 @@ fun ArCameraView(
                     }
                 }
 
-                var markerNode by remember(visible.poi.id) { mutableStateOf<Node?>(null) }
+                // Обычная (не Compose-state) ссылка на узел — регистрация в nodeToMarker
+                // происходит СИНХРОННО внутри apply{}, в момент создания узла, а не через
+                // промежуточное состояние + отдельный DisposableEffect. Раньше это создавало
+                // окно гонки: модель уже видна на экране, а запись в карту клика ещё "летит"
+                // через дополнительный цикл рекомпозиции — тап в этот момент проваливался.
+                val nodeHolder = remember(visible.poi.id) { arrayOfNulls<Node>(1) }
                 // Согласованный подъём: применяется одинаково к модели, плашке загрузки и
                 // верхней точке луча — так луч остаётся цельным независимо от того, насколько
                 // высоко поднята конкретная модель (по желанию заказчика, поле modelExceeding).
                 val effectiveHeight = MARKER_HEIGHT_METERS + visible.poi.modelExceeding.toFloat()
-                DisposableEffect(markerNode) {
-                    val node = markerNode
-                    if (node != null) nodeToMarker[node] = visible
-                    onDispose { node?.let { nodeToMarker.remove(it) } }
+                DisposableEffect(visible.poi.id) {
+                    onDispose { nodeHolder[0]?.let { nodeToMarker.remove(it) } }
                 }
 
                 val currentModelInstance = modelInstance
@@ -167,7 +170,10 @@ fun ArCameraView(
                         scaleToUnits = MARKER_BASE_SIZE_METERS * visible.scale,
                         position = Position(visible.arXMeters, effectiveHeight, visible.arZMeters),
                         rotation = Rotation(x = visible.poi.rotationXDegrees.toFloat()),
-                        apply = { markerNode = this }
+                        apply = {
+                            nodeToMarker[this] = visible
+                            nodeHolder[0] = this
+                        }
                     )
                 } else {
                     val statusText = modelLoadError?.let { "Ошибка: $it" }
