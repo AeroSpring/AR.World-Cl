@@ -23,7 +23,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,8 +39,6 @@ import com.aerospring.arworld.core.data.repository.PoiFetchResult
 import com.aerospring.arworld.core.data.repository.RemotePoiRepository
 import com.aerospring.arworld.core.data.geo.GeoMath
 import com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm
-import com.aerospring.arworld.feature.whereanythingis.storage.RadiusPreferences
-import kotlinx.coroutines.delay
 
 /**
  * Экран AR-сервиса "Где что находится".
@@ -66,17 +63,13 @@ fun WhereAnythingIsScreen(
         permissionsGranted = result.values.all { it }
     }
 
-    val context = LocalContext.current
-    var sliderPosition by remember {
-        mutableStateOf(radiusKmToSliderPosition(RadiusPreferences.load(context, default = 10.0)))
-    }
-
-    // Сохраняем с небольшой задержкой после того, как пользователь перестал двигать ползунок —
-    // не пишем на диск на каждый пиксель перетаскивания.
-    LaunchedEffect(sliderPosition) {
-        delay(300)
-        RadiusPreferences.save(context, sliderPositionToRadiusKm(sliderPosition))
-    }
+    // Радиус всегда стартует с безопасного значения по умолчанию — сохранение между запусками
+    // убрано: пользователь на слабом устройстве мог оставить экстремальный радиус (напр. 1000 км),
+    // и при следующем запуске приложение сразу пыталось бы прогрузить огромный объём моделей и
+    // падало, не давая шанса вручную уменьшить радиус.
+    // Минимальный радиус ("отсечение ближних") по умолчанию всегда 0f (1 км) — помогает увидеть
+    // дальние объекты, перекрытые ближними на одной линии обзора.
+    var sliderRange by remember { mutableStateOf(0f..radiusKmToSliderPosition(10.0)) }
     var selectedCategoryIds by remember { mutableStateOf(defaultCategories.map { it.id }.toSet()) }
     var categoriesExpanded by remember { mutableStateOf(true) }
     var selectedMarker by remember { mutableStateOf<VisibleMarker?>(null) }
@@ -104,7 +97,8 @@ fun WhereAnythingIsScreen(
             if (permissionsGranted) {
                 val userLocation by rememberUserLocation()
 
-                val radiusKm = com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm(sliderPosition)
+                val minRadiusKm = com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm(sliderRange.start)
+                val radiusKm = com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm(sliderRange.endInclusive)
 
                 // Загрузка боевой базы POI с сервера администратора — один раз при заходе на экран.
                 var poiFetchResult by remember { mutableStateOf<PoiFetchResult?>(null) }
@@ -146,7 +140,7 @@ fun WhereAnythingIsScreen(
                     }
                 }
 
-                val visibleMarkers = remember(stableUserLocation, radiusKm, selectedCategoryIds, calibratedHeadingDegrees, poiFetchResult) {
+                val visibleMarkers = remember(stableUserLocation, minRadiusKm, radiusKm, selectedCategoryIds, calibratedHeadingDegrees, poiFetchResult) {
                     val heading = calibratedHeadingDegrees
                     val location = stableUserLocation
                     val fetchResult = poiFetchResult
@@ -155,6 +149,7 @@ fun WhereAnythingIsScreen(
                             userLat = location.latitude,
                             userLon = location.longitude,
                             pois = fetchResult.pois,
+                            minRadiusKm = minRadiusKm,
                             radiusKm = radiusKm,
                             selectedCategoryIds = selectedCategoryIds,
                             headingDegrees = heading
@@ -211,8 +206,8 @@ fun WhereAnythingIsScreen(
                 }
 
                 TopControlPanel(
-                    sliderPosition = sliderPosition,
-                    onSliderPositionChange = { sliderPosition = it },
+                    sliderRange = sliderRange,
+                    onSliderRangeChange = { sliderRange = it },
                     categories = defaultCategories,
                     selectedCategoryIds = selectedCategoryIds,
                     onCategoryToggle = { id ->

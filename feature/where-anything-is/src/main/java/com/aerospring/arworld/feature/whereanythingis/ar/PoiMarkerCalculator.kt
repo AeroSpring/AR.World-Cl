@@ -36,11 +36,13 @@ object PoiMarkerCalculator {
         userLat: Double,
         userLon: Double,
         pois: List<Poi>,
+        minRadiusKm: Double = 0.0,
         radiusKm: Double,
         selectedCategoryIds: Set<String>,
         headingDegrees: Float
     ): List<VisibleMarker> {
         val radiusMeters = radiusKm * 1000.0
+        val minRadiusMeters = minRadiusKm * 1000.0
         val headingRad = Math.toRadians(headingDegrees.toDouble())
         val cosH = cos(headingRad)
         val sinH = sin(headingRad)
@@ -50,7 +52,7 @@ object PoiMarkerCalculator {
             .mapNotNull { poi ->
                 val distance = GeoMath.distanceMeters(userLat, userLon, poi.latitude, poi.longitude)
                 // Радиус используется ТОЛЬКО для фильтрации видимости — не для позиции в сцене.
-                if (distance > radiusMeters) return@mapNotNull null
+                if (distance > radiusMeters || distance < minRadiusMeters) return@mapNotNull null
 
                 val (east, north) = GeoMath.localOffsetMeters(userLat, userLon, poi.latitude, poi.longitude)
 

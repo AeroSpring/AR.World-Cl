@@ -20,39 +20,40 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.RangeSlider
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.core.data.model.Category
-import kotlin.math.pow
 import kotlin.math.roundToInt
 
-private const val MIN_RADIUS_KM = 1.0
 private const val MAX_RADIUS_KM = 1000.0
-private val LOG_SPAN = kotlin.math.log10(MAX_RADIUS_KM / MIN_RADIUS_KM) // log10(1000) = 3
+// Логарифм от (радиус + 1), а не просто от радиуса — это даёт настоящий, нативный 0
+// на старте шкалы (обычный log10(0) не определён, отсюда раньше и была "упрямая" единица).
+private val LOG_SCALE_FACTOR = kotlin.math.ln(MAX_RADIUS_KM + 1.0)
 
-/** Переводит позицию слайдера [0,1] в километры по логарифмической шкале [1..1000]. */
+/** Переводит позицию слайдера [0,1] в километры по логарифмической шкале [0..1000]. */
 fun sliderPositionToRadiusKm(position: Float): Double =
-    MIN_RADIUS_KM * 10.0.pow(position * LOG_SPAN)
+    kotlin.math.exp(position * LOG_SCALE_FACTOR) - 1.0
 
-/** Обратное преобразование — из километров в позицию слайдера [0,1]. Пригодится для сохранения выбора пользователя. */
+/** Обратное преобразование — из километров в позицию слайдера [0,1]. */
 fun radiusKmToSliderPosition(radiusKm: Double): Float =
-    (kotlin.math.log10(radiusKm / MIN_RADIUS_KM) / LOG_SPAN).toFloat().coerceIn(0f, 1f)
+    (kotlin.math.ln(radiusKm + 1.0) / LOG_SCALE_FACTOR).toFloat().coerceIn(0f, 1f)
 
 /** До 10 км — один знак после запятой (точность важна на малых радиусах), от 10 км — целое число. */
 private fun formatRadiusKm(radiusKm: Double): String =
-    if (radiusKm < 10.0) {
-        "%.1f".format(radiusKm)
-    } else {
-        radiusKm.roundToInt().toString()
+    when {
+        radiusKm <= 0.0 -> "0"
+        radiusKm < 10.0 -> "%.1f".format(radiusKm)
+        else -> radiusKm.roundToInt().toString()
     }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TopControlPanel(
-    sliderPosition: Float,
-    onSliderPositionChange: (Float) -> Unit,
+    sliderRange: ClosedFloatingPointRange<Float>,
+    onSliderRangeChange: (ClosedFloatingPointRange<Float>) -> Unit,
     categories: List<Category>,
     selectedCategoryIds: Set<String>,
     onCategoryToggle: (String) -> Unit,
@@ -60,7 +61,8 @@ fun TopControlPanel(
     onCategoriesExpandedToggle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val radiusKm = sliderPositionToRadiusKm(sliderPosition)
+    val minRadiusKm = sliderPositionToRadiusKm(sliderRange.start)
+    val maxRadiusKm = sliderPositionToRadiusKm(sliderRange.endInclusive)
 
     Card(
         modifier = modifier
@@ -73,13 +75,13 @@ fun TopControlPanel(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Slider(
-                    value = sliderPosition,
-                    onValueChange = onSliderPositionChange,
+                RangeSlider(
+                    value = sliderRange,
+                    onValueChange = onSliderRangeChange,
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = "${formatRadiusKm(radiusKm)} км",
+                    text = "${formatRadiusKm(minRadiusKm)}–${formatRadiusKm(maxRadiusKm)} км",
                     modifier = Modifier.padding(start = 8.dp)
                 )
             }
