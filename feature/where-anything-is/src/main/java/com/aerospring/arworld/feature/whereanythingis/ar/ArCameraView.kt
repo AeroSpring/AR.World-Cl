@@ -41,7 +41,6 @@ import kotlinx.coroutines.withTimeout
 import kotlin.math.atan2
 import kotlin.math.sqrt
 
-
 private const val MARKER_HEIGHT_METERS = 4f
 private const val RAY_RADIUS_METERS = 0.02f
 private const val BADGE_VERTICAL_OFFSET_METERS = 0.6f
