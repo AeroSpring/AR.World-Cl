@@ -1,6 +1,5 @@
 package com.aerospring.arworld.feature.whereanythingis.ar
 
-import android.util.Log
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -18,7 +17,6 @@ import com.aerospring.arworld.feature.whereanythingis.model.GlbDownloadState
 import com.aerospring.arworld.feature.whereanythingis.model.GlbDownloader
 import com.aerospring.arworld.feature.whereanythingis.ui.MarkerLoadingBadge
 import com.aerospring.arworld.feature.whereanythingis.ui.categoryColor
-import com.aerospring.arworld.feature.whereanythingis.ar.VisibleMarker
 import com.google.ar.core.Config
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
@@ -173,6 +171,13 @@ fun ArCameraView(
                         apply = {
                             nodeToMarker[this] = visible
                             nodeHolder[0] = this
+                            // Известная особенность SceneView (issue на GitHub, конец августа 2026):
+                            // у только что созданного узла внутреннее состояние (в т.ч. то, что влияет
+                            // на попадание тапа) не "проталкивается" в Filament при обычном добавлении
+                            // в сцену — только при явном переприсваивании отслеживаемого свойства вроде
+                            // isVisible. Форсируем это вручную сразу при создании.
+                            this.isVisible = false
+                            this.isVisible = true
                         }
                     )
                 } else {
