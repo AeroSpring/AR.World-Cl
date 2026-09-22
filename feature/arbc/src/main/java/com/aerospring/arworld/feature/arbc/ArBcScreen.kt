@@ -1,5 +1,8 @@
 package com.aerospring.arworld.feature.arbc
 
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -24,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.feature.arbc.ar.ArBcSceneView
 import com.aerospring.arworld.feature.arbc.data.ArBcRepository
@@ -98,18 +102,37 @@ fun ArBcScreen(
 
                     is ArBcSceneFetchResult.Success -> {
                         val scene: ArBcScene = result.scene
+                        val context = LocalContext.current
                         ArBcSceneView(
                             scene = scene,
                             onInteraction = { interaction ->
-                                // TODO(шаг 4): реальная обработка openUrl/activateAI —
-                                // пока просто просмотр в логах для смоук-теста.
                                 when (interaction) {
-                                    is Interaction.OpenUrl ->
-                                        android.util.Log.d("ArBcScreen", "openUrl: ${interaction.url}")
-                                    is Interaction.ActivateAI ->
-                                        android.util.Log.d("ArBcScreen", "activateAI")
-                                    Interaction.Unknown ->
+                                    is Interaction.OpenUrl -> {
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(interaction.url))
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(
+                                                context,
+                                                "Не удалось открыть ссылку",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                    is Interaction.ActivateAI -> {
+                                        // ИИ-шлюз ещё не реализован — шаг 5. Пока просто
+                                        // сообщаем пользователю, а не молчим при тапе.
+                                        Toast.makeText(
+                                            context,
+                                            "ИИ-помощник появится позже",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    Interaction.Unknown -> {
+                                        // Неизвестный тип интеракции (например, появившийся
+                                        // сначала в веб-версии) — молча игнорируем, не падаем.
                                         android.util.Log.d("ArBcScreen", "unknown interaction")
+                                    }
                                 }
                             },
                             onBackgroundClick = { },

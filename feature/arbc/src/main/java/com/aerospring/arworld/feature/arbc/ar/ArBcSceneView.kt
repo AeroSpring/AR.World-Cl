@@ -53,6 +53,7 @@ import kotlinx.coroutines.withTimeout
  * продвижением времени каждый кадр). Индекс, не имя — у клиентских .glb могут быть
  * любые/бессмысленные имена clip'ов, разбираться в них не нужно.
  */
+
 @Composable
 fun ArBcSceneView(
     scene: ArBcScene,
@@ -227,7 +228,12 @@ fun ArBcSceneView(
                         )
                     ) {
                         ArWorldTheme(darkTheme = true) {
-                            ArbcLoadingBadge(statusText = statusText)
+                            ArbcLoadingBadge(
+                                statusText = statusText,
+                                onClick = {
+                                    sceneModel.interactions.firstOrNull()?.let(onInteraction)
+                                }
+                            )
                         }
                     }
                 }
