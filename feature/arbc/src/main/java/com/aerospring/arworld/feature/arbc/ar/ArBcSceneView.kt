@@ -23,6 +23,7 @@ import com.aerospring.arworld.feature.arbc.ui.ArbcLoadingBadge
 import com.google.ar.core.Config
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
+import io.github.sceneview.math.Scale
 import io.github.sceneview.model.ModelInstance
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.Node
@@ -38,6 +39,14 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlin.math.sqrt
+
+// Те же проверенные константы и формула компенсации перспективы, что и у плашки
+// загрузки POI в ArCameraView.kt ("Где что находится") — размер плашки растёт
+// пропорционально расстоянию до неё от точки старта AR-сессии, чтобы не быть
+// то огромной вблизи, то незаметной вдали.
+private const val BADGE_REFERENCE_DISTANCE_METERS = 15f
+private const val BADGE_BASE_SCALE = 2.0f
 
 /**
  * AR-сцена одной AR.Визитки.
@@ -218,6 +227,15 @@ fun ArBcSceneView(
                             is ArbcDownloadState.Error -> "Ошибка: ${state.message}"
                         }
 
+                    // Та же формула компенсации перспективы, что и у POI-плашек: масштаб
+                    // растёт пропорционально дистанции от точки старта сессии до плашки.
+                    val badgeDistance3d = sqrt(
+                        sceneModel.position.x * sceneModel.position.x +
+                                sceneModel.position.y * sceneModel.position.y +
+                                sceneModel.position.z * sceneModel.position.z
+                    )
+                    val badgeScale = BADGE_BASE_SCALE * (badgeDistance3d / BADGE_REFERENCE_DISTANCE_METERS)
+
                     ViewNode(
                         windowManager = viewNodeWindowManager,
                         unlit = true,
@@ -225,7 +243,8 @@ fun ArBcSceneView(
                             sceneModel.position.x,
                             sceneModel.position.y,
                             sceneModel.position.z
-                        )
+                        ),
+                        scale = Scale(badgeScale, badgeScale, badgeScale)
                     ) {
                         ArWorldTheme(darkTheme = true) {
                             ArbcLoadingBadge(
