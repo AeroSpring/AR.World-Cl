@@ -9,6 +9,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.aerospring.arworld.core.ui.theme.ArWorldTheme
+import com.aerospring.arworld.feature.arbc.AR_BUSINESS_CARDS_ROUTE
+import com.aerospring.arworld.feature.arbc.ArBcScreen
 import com.aerospring.arworld.feature.home.HomeScreen
 import com.aerospring.arworld.feature.whereanythingis.WhereAnythingIsScreen
 import com.aerospring.arworld.navigation.ArWorldDestinations
@@ -39,6 +41,15 @@ private fun ArWorldNavHost(
         }
         composable(ArWorldDestinations.WHERE_ANYTHING_IS) {
             WhereAnythingIsScreen(
+                onBackClick = { navController.popBackStack() }
+            )
+        }
+        composable(AR_BUSINESS_CARDS_ROUTE) {
+            // ВРЕМЕННО: clientId захардкожен для смоук-теста ("89ztMvCZ" — тестовый
+            // клиент с реальной .glb-моделью). Реальный заход по QR/deeplink на
+            // конкретного клиента — отдельный шаг, ещё не сделан.
+            ArBcScreen(
+                clientId = "89ztMvCZ",
                 onBackClick = { navController.popBackStack() }
             )
         }

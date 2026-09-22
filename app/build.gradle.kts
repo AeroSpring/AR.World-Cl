@@ -41,6 +41,7 @@ kotlin {
 dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:data"))
+    implementation(project(":feature:arbc"))
     implementation(project(":feature:home"))
     implementation(project(":feature:where-anything-is"))
 
@@ -53,4 +54,6 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.navigation.compose)
+
+//    implementation(libs.kotlinx.serialization.json)
 }

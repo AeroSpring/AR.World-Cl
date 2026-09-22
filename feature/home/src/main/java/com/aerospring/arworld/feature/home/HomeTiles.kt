@@ -23,8 +23,8 @@ val homeTiles = listOf(
         id = "ar_business_cards",
         title = "AR.Визитки",
         imageRes = R.drawable.tile_ar_business_cards,
-        route = null,
-        launchDateMillis = DEFAULT_LAUNCH_DATE_MILLIS
+        route = "ar_business_cards", // ВРЕМЕННО для смоук-теста — раздел ещё не готов к реальным пользователям
+        launchDateMillis = 0L // ВРЕМЕННО — верни DEFAULT_LAUNCH_DATE_MILLIS перед публикацией!
     ),
     HomeTile(
         id = "ar_facades",
