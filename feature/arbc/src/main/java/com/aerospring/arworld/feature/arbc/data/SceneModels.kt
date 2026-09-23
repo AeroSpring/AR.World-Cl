@@ -92,6 +92,7 @@ sealed class Interaction {
  *    decode as [Interaction.Unknown] instead of throwing, so Android never
  *    crashes on an interaction type that was so far only shipped on web
  */
+@OptIn(ExperimentalSerializationApi::class)
 val arBcJson = Json {
     ignoreUnknownKeys = true
     classDiscriminatorMode = kotlinx.serialization.json.ClassDiscriminatorMode.POLYMORPHIC

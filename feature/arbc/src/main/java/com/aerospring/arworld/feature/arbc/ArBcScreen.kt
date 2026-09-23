@@ -37,15 +37,9 @@ import com.aerospring.arworld.feature.arbc.data.Interaction
 import com.aerospring.arworld.feature.arbc.permissions.REQUIRED_ARBC_PERMISSIONS
 import com.aerospring.arworld.feature.arbc.permissions.rememberArbcPermissionsGranted
 
-/** Маршрут этой фичи объявлен здесь же, внутри модуля — а не в общем
- *  ArWorldDestinations, чтобы feature:arbc ничего не менял в шаред-коде,
- *  общем для всех разделов приложения. */
-const val AR_BUSINESS_CARDS_ROUTE = "ar_business_cards"
-
 /**
- * Экран одной AR.Визитки. clientId сейчас передаётся напрямую (тестовый заход —
- * "89ztMvCZ" — для смоук-теста на реальной модели). Реальный запуск по QR/deeplink
- * из /v/{clientId} — отдельный шаг, не блокирует эту проверку.
+ * Экран одной AR.Визитки. clientId приходит от ArBcQrScanScreen (см. ArBcEntryPoint) —
+ * после того как пользователь отсканировал QR-код конкретной визитки внутри раздела.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
