@@ -105,3 +105,10 @@ val arBcJson = Json {
  */
 fun Json.decodeSceneOrNull(raw: String): ArBcScene? =
     runCatching { decodeFromString(ArBcScene.serializer(), raw) }.getOrNull()
+
+/** Тело запроса/ответа POST /ai/{clientId}/chat — см. arbc.py на сервере. */
+@Serializable
+data class ArBcAiChatRequest(val message: String)
+
+@Serializable
+data class ArBcAiChatResponse(val reply: String)
