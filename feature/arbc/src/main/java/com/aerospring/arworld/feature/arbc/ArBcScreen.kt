@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -19,7 +18,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,6 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.feature.arbc.ar.ArBcSceneView
 import com.aerospring.arworld.feature.arbc.data.ArBcAiChatResult
+import com.aerospring.arworld.feature.arbc.data.ArBcAiChatTurn
 import com.aerospring.arworld.feature.arbc.data.ArBcAiRepository
 import com.aerospring.arworld.feature.arbc.data.ArBcRepository
 import com.aerospring.arworld.feature.arbc.data.ArBcScene
@@ -105,10 +104,41 @@ fun ArBcScreen(
                         val context = LocalContext.current
                         val coroutineScope = rememberCoroutineScope()
 
-                        // Состояние тестового диалога ИИ: null = закрыт, "" = идёт запрос,
-                        // непустая строка = ответ (или текст ошибки) для показа.
-                        var aiDialogText by remember { mutableStateOf<String?>(null) }
-                        var aiDialogLoading by remember { mutableStateOf(false) }
+                        // Вся переписка с ИИ-помощником за время нахождения на этом экране.
+                        // Живёт до выхода со сцены — специально НЕ сбрасывается между
+                        // повторными тапами по модели, чтобы разговор оставался цельным.
+                        var chatHistory by remember { mutableStateOf<List<ArBcAiChatTurn>>(emptyList()) }
+                        var chatDialogOpen by remember { mutableStateOf(false) }
+                        var isSending by remember { mutableStateOf(false) }
+
+                        fun sendMessage(text: String) {
+                            val historyBeforeThisMessage = chatHistory
+                            chatHistory = chatHistory + ArBcAiChatTurn(role = "user", content = text)
+                            isSending = true
+                            coroutineScope.launch {
+                                when (
+                                    val chatResult = ArBcAiRepository.chat(
+                                        clientId = clientId,
+                                        message = text,
+                                        history = historyBeforeThisMessage
+                                    )
+                                ) {
+                                    is ArBcAiChatResult.Success -> {
+                                        chatHistory = chatHistory + ArBcAiChatTurn(
+                                            role = "assistant",
+                                            content = chatResult.reply
+                                        )
+                                    }
+                                    is ArBcAiChatResult.Error -> {
+                                        chatHistory = chatHistory + ArBcAiChatTurn(
+                                            role = "assistant",
+                                            content = "Ошибка: ${chatResult.message}"
+                                        )
+                                    }
+                                }
+                                isSending = false
+                            }
+                        }
 
                         ArBcSceneView(
                             scene = scene,
@@ -127,24 +157,18 @@ fun ArBcScreen(
                                         }
                                     }
                                     is Interaction.ActivateAI -> {
-                                        // Пока без голоса (это отдельный шаг) — просто
-                                        // проверяем всю цепочку текстом: сервер → LLM → обратно.
-                                        aiDialogLoading = true
-                                        aiDialogText = null
-                                        coroutineScope.launch {
-                                            when (val chatResult = ArBcAiRepository.chat(
-                                                clientId = clientId,
-                                                message = "Что вы можете предложить?"
-                                            )) {
-                                                is ArBcAiChatResult.Success -> {
-                                                    aiDialogText = chatResult.reply
-                                                }
-                                                is ArBcAiChatResult.Error -> {
-                                                    aiDialogText = "Ошибка: ${chatResult.message}"
-                                                }
-                                            }
-                                            aiDialogLoading = false
+                                        // Локальное приветствие первым тапом — не уходит на
+                                        // сервер отдельным запросом, просто задаёт тон диалога
+                                        // (не тратим LLM-вызов на пустое приветствие).
+                                        if (chatHistory.isEmpty()) {
+                                            chatHistory = listOf(
+                                                ArBcAiChatTurn(
+                                                    role = "assistant",
+                                                    content = "Здравствуйте! Чем могу помочь?"
+                                                )
+                                            )
                                         }
+                                        chatDialogOpen = true
                                     }
                                     Interaction.Unknown -> {
                                         // Неизвестный тип интеракции (например, появившийся
@@ -158,22 +182,20 @@ fun ArBcScreen(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        if (aiDialogLoading || aiDialogText != null) {
-                            AlertDialog(
-                                onDismissRequest = { aiDialogText = null; aiDialogLoading = false },
-                                title = { Text("ИИ-помощник (тест)") },
-                                text = {
-                                    if (aiDialogLoading) {
-                                        CircularProgressIndicator()
-                                    } else {
-                                        Text(aiDialogText.orEmpty())
-                                    }
+                        if (chatDialogOpen) {
+                            ArBcAiChatDialog(
+                                messages = chatHistory,
+                                isSending = isSending,
+                                onSendMessage = ::sendMessage,
+                                onMicClick = {
+                                    // Заглушка — реальная запись голоса появится отдельным шагом.
+                                    Toast.makeText(
+                                        context,
+                                        "Голосовой ввод появится на следующем шаге",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 },
-                                confirmButton = {
-                                    TextButton(onClick = { aiDialogText = null; aiDialogLoading = false }) {
-                                        Text("Закрыть")
-                                    }
-                                }
+                                onDismiss = { chatDialogOpen = false }
                             )
                         }
                     }

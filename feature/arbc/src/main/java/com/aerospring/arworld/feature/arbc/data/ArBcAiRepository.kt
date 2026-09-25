@@ -7,8 +7,17 @@ import kotlinx.serialization.encodeToString
 import java.net.HttpURLConnection
 import java.net.URL
 
+/** Одна реплика диалога — "user" или "assistant". Используется и как элемент истории
+ *  в запросе к серверу, и как модель для UI-ленты сообщений (ArBcAiChatDialog),
+ *  чтобы не дублировать одинаковую по смыслу структуру в двух местах. */
 @Serializable
-private data class AiChatRequestBody(val message: String)
+data class ArBcAiChatTurn(val role: String, val content: String)
+
+@Serializable
+private data class AiChatRequestBody(
+    val message: String,
+    val history: List<ArBcAiChatTurn> = emptyList()
+)
 
 @Serializable
 private data class AiChatResponseBody(val reply: String)
@@ -19,11 +28,19 @@ sealed class ArBcAiChatResult {
 }
 
 /** Тянет ответ ИИ-помощника с того же сервера, что и scene.json (POST /ai/{clientId}/chat).
- *  По аналогии с ArBcRepository — простым HttpURLConnection, без сторонних HTTP-библиотек. */
+ *  По аналогии с ArBcRepository — простым HttpURLConnection, без сторонних HTTP-библиотек.
+ *
+ *  history — все предыдущие реплики диалога (без нового [message], его сервер добавит
+ *  сам последним) — без этого LLM отвечал бы на каждое сообщение "с чистого листа",
+ *  не помня, что было сказано раньше в этом же разговоре. */
 object ArBcAiRepository {
     private const val BASE_URL = "https://autoknowledge.tech"
 
-    suspend fun chat(clientId: String, message: String): ArBcAiChatResult =
+    suspend fun chat(
+        clientId: String,
+        message: String,
+        history: List<ArBcAiChatTurn> = emptyList()
+    ): ArBcAiChatResult =
         withContext(Dispatchers.IO) {
             try {
                 val connection = URL("$BASE_URL/ai/$clientId/chat")
@@ -34,7 +51,9 @@ object ArBcAiRepository {
                 connection.connectTimeout = 10_000
                 connection.readTimeout = 35_000 // LLM-ответ может занять несколько секунд
 
-                val requestJson = arBcJson.encodeToString(AiChatRequestBody(message))
+                val requestJson = arBcJson.encodeToString(
+                    AiChatRequestBody(message = message, history = history)
+                )
                 connection.outputStream.use { it.write(requestJson.toByteArray(Charsets.UTF_8)) }
 
                 val responseCode = connection.responseCode
