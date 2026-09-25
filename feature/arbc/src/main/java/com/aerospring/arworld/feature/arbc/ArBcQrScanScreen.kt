@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun ArBcQrScanScreen(
     onScanned: (clientId: String) -> Unit,
+    onShowcaseClick: () -> Unit,
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -126,6 +128,12 @@ fun ArBcQrScanScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onShowcaseClick) {
+                        Icon(
+                            imageVector = Icons.Filled.Storefront,
+                            contentDescription = "Витрина активных AR.Визиток"
+                        )
+                    }
                     IconButton(onClick = {
                         pickImageLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)

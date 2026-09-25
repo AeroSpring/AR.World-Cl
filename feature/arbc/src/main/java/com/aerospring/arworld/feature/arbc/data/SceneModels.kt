@@ -112,3 +112,18 @@ data class ArBcAiChatRequest(val message: String)
 
 @Serializable
 data class ArBcAiChatResponse(val reply: String)
+
+/** Ответ GET /arbc/showcase — см. arbc.py на сервере. previewUrl относительный
+ *  (например "/clients/{id}/preview") — абсолютным его делает уже слой данных
+ *  (ArBcShowcaseRepository), чтобы сервер не привязывался к конкретному домену. */
+@Serializable
+data class ShowcaseClient(
+    val clientId: String,
+    val clientName: String,
+    val previewUrl: String? = null
+)
+
+@Serializable
+data class ShowcaseResponse(
+    val clients: List<ShowcaseClient> = emptyList()
+)

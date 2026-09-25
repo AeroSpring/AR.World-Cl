@@ -53,4 +53,9 @@ dependencies {
     implementation(libs.androidx.camera.mlkit.vision)
     implementation(libs.mlkit.barcode.scanning)
     implementation(libs.androidx.lifecycle.runtime.compose)
+
+    // Загрузка превью-картинок клиентов для витрины (шаг 6). Пока прямой координатой,
+    // не через libs.versions.toml — единственная зависимость в проекте вне каталога;
+    // если хочешь единообразия, пришли libs.versions.toml, заведу алиас туда.
+    implementation("io.coil-kt:coil-compose:2.7.0")
 }

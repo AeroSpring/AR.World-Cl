@@ -12,25 +12,38 @@ import androidx.compose.runtime.setValue
 const val AR_BUSINESS_CARDS_ROUTE = "ar_business_cards"
 
 /**
- * Раздел открывается ВСЕГДА со сканера (никакого захардкоженного clientId и никакого
- * системного deeplink/App Links — см. ArBcQrScanScreen). Пока clientId не распознан —
- * показываем сканер; после успешного скана — переключаемся на саму сцену. "Назад" из
- * сцены возвращает к сканеру (пересканировать другую визитку), а не сразу на главный экран.
+ * Три внутренних состояния раздела — сканер / витрина активных визиток / сцена
+ * конкретного клиента — живут целиком внутри этой фичи, НЕ как отдельные
+ * top-level route в общей навигации (тот же принцип, что и раньше: feature:arbc
+ * не трогает ArWorldDestinations). И сканер, и витрина — два равноправных способа
+ * попасть в сцену клиента; "назад" из сцены всегда возвращает на сканер (не на
+ * витрину — так пользователь может пересканировать другую визитку сразу).
  */
+private sealed interface ArBcEntryState {
+    data object Scanner : ArBcEntryState
+    data object Showcase : ArBcEntryState
+    data class Scene(val clientId: String) : ArBcEntryState
+}
+
 @Composable
 fun ArBcEntryPoint(onExit: () -> Unit) {
-    var clientId by remember { mutableStateOf<String?>(null) }
-    val currentClientId = clientId
+    var state by remember { mutableStateOf<ArBcEntryState>(ArBcEntryState.Scanner) }
 
-    if (currentClientId == null) {
-        ArBcQrScanScreen(
-            onScanned = { clientId = it },
+    when (val current = state) {
+        is ArBcEntryState.Scanner -> ArBcQrScanScreen(
+            onScanned = { clientId -> state = ArBcEntryState.Scene(clientId) },
+            onShowcaseClick = { state = ArBcEntryState.Showcase },
             onBackClick = onExit
         )
-    } else {
-        ArBcScreen(
-            clientId = currentClientId,
-            onBackClick = { clientId = null }
+
+        is ArBcEntryState.Showcase -> ArBcShowcaseScreen(
+            onClientSelected = { clientId -> state = ArBcEntryState.Scene(clientId) },
+            onBackClick = { state = ArBcEntryState.Scanner }
+        )
+
+        is ArBcEntryState.Scene -> ArBcScreen(
+            clientId = current.clientId,
+            onBackClick = { state = ArBcEntryState.Scanner }
         )
     }
 }
