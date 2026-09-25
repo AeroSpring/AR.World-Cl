@@ -22,9 +22,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,6 +62,7 @@ import com.aerospring.arworld.feature.arbc.data.ArBcAiChatTurn
 fun ArBcAiChatDialog(
     messages: List<ArBcAiChatTurn>,
     isSending: Boolean,
+    isListening: Boolean,
     onSendMessage: (String) -> Unit,
     onMicClick: () -> Unit,
     onDismiss: () -> Unit
@@ -83,7 +84,12 @@ fun ArBcAiChatDialog(
                     )
                 },
                 bottomBar = {
-                    ChatInputRow(isSending = isSending, onSendMessage = onSendMessage, onMicClick = onMicClick)
+                    ChatInputRow(
+                        isSending = isSending,
+                        isListening = isListening,
+                        onSendMessage = onSendMessage,
+                        onMicClick = onMicClick
+                    )
                 }
             ) { innerPadding ->
                 val listState = rememberLazyListState()
@@ -169,6 +175,7 @@ private fun WaveBar(index: Int) {
 @Composable
 private fun ChatInputRow(
     isSending: Boolean,
+    isListening: Boolean,
     onSendMessage: (String) -> Unit,
     onMicClick: () -> Unit
 ) {
@@ -179,16 +186,21 @@ private fun ChatInputRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        IconButton(onClick = onMicClick) {
-            Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод")
+        IconButton(onClick = onMicClick, enabled = !isSending) {
+            if (isListening) {
+                PulsingMicIcon()
+            } else {
+                Icon(Icons.Filled.Mic, contentDescription = "Голосовой ввод")
+            }
         }
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
             modifier = Modifier.weight(1f),
-            placeholder = { Text("Ваш вопрос…") },
+            placeholder = { Text(if (isListening) "Слушаю…" else "Ваш вопрос…") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            singleLine = true
+            singleLine = true,
+            enabled = !isListening
         )
         IconButton(
             onClick = {
@@ -198,9 +210,30 @@ private fun ChatInputRow(
                     text = ""
                 }
             },
-            enabled = text.isNotBlank() && !isSending
+            enabled = text.isNotBlank() && !isSending && !isListening
         ) {
             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
         }
     }
+}
+
+/** Пульсирующая иконка микрофона — вся обратная связь "идёт запись": SpeechRecognizer
+ *  не отдаёт удобный уровень громкости без лишней возни с onRmsChanged. */
+@Composable
+private fun PulsingMicIcon() {
+    val infiniteTransition = rememberInfiniteTransition(label = "mic-pulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "mic-alpha"
+    )
+    Icon(
+        imageVector = Icons.Filled.Mic,
+        contentDescription = "Слушаю…",
+        tint = MaterialTheme.colorScheme.error.copy(alpha = alpha)
+    )
 }
