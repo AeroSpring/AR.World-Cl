@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -18,24 +19,29 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.feature.arbc.ar.ArBcSceneView
+import com.aerospring.arworld.feature.arbc.data.ArBcAiChatResult
+import com.aerospring.arworld.feature.arbc.data.ArBcAiRepository
 import com.aerospring.arworld.feature.arbc.data.ArBcRepository
 import com.aerospring.arworld.feature.arbc.data.ArBcScene
 import com.aerospring.arworld.feature.arbc.data.ArBcSceneFetchResult
 import com.aerospring.arworld.feature.arbc.data.Interaction
 import com.aerospring.arworld.feature.arbc.permissions.REQUIRED_ARBC_PERMISSIONS
 import com.aerospring.arworld.feature.arbc.permissions.rememberArbcPermissionsGranted
+import kotlinx.coroutines.launch
 
 /**
  * Экран одной AR.Визитки. clientId приходит от ArBcQrScanScreen (см. ArBcEntryPoint) —
@@ -97,6 +103,13 @@ fun ArBcScreen(
                     is ArBcSceneFetchResult.Success -> {
                         val scene: ArBcScene = result.scene
                         val context = LocalContext.current
+                        val coroutineScope = rememberCoroutineScope()
+
+                        // Состояние тестового диалога ИИ: null = закрыт, "" = идёт запрос,
+                        // непустая строка = ответ (или текст ошибки) для показа.
+                        var aiDialogText by remember { mutableStateOf<String?>(null) }
+                        var aiDialogLoading by remember { mutableStateOf(false) }
+
                         ArBcSceneView(
                             scene = scene,
                             onInteraction = { interaction ->
@@ -114,13 +127,24 @@ fun ArBcScreen(
                                         }
                                     }
                                     is Interaction.ActivateAI -> {
-                                        // ИИ-шлюз ещё не реализован — шаг 5. Пока просто
-                                        // сообщаем пользователю, а не молчим при тапе.
-                                        Toast.makeText(
-                                            context,
-                                            "ИИ-помощник появится позже",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                                        // Пока без голоса (это отдельный шаг) — просто
+                                        // проверяем всю цепочку текстом: сервер → LLM → обратно.
+                                        aiDialogLoading = true
+                                        aiDialogText = null
+                                        coroutineScope.launch {
+                                            when (val chatResult = ArBcAiRepository.chat(
+                                                clientId = clientId,
+                                                message = "Что вы можете предложить?"
+                                            )) {
+                                                is ArBcAiChatResult.Success -> {
+                                                    aiDialogText = chatResult.reply
+                                                }
+                                                is ArBcAiChatResult.Error -> {
+                                                    aiDialogText = "Ошибка: ${chatResult.message}"
+                                                }
+                                            }
+                                            aiDialogLoading = false
+                                        }
                                     }
                                     Interaction.Unknown -> {
                                         // Неизвестный тип интеракции (например, появившийся
@@ -133,6 +157,25 @@ fun ArBcScreen(
                             onSessionCreated = { },
                             modifier = Modifier.fillMaxSize()
                         )
+
+                        if (aiDialogLoading || aiDialogText != null) {
+                            AlertDialog(
+                                onDismissRequest = { aiDialogText = null; aiDialogLoading = false },
+                                title = { Text("ИИ-помощник (тест)") },
+                                text = {
+                                    if (aiDialogLoading) {
+                                        CircularProgressIndicator()
+                                    } else {
+                                        Text(aiDialogText.orEmpty())
+                                    }
+                                },
+                                confirmButton = {
+                                    TextButton(onClick = { aiDialogText = null; aiDialogLoading = false }) {
+                                        Text("Закрыть")
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             } else {
