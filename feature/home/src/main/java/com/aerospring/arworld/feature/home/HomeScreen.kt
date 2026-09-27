@@ -27,6 +27,10 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -50,7 +54,8 @@ import android.net.Uri
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
-    onTileClick: (route: String) -> Unit
+    onTileClick: (route: String) -> Unit,
+    onAboutClick: () -> Unit
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -59,7 +64,14 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("AR.Мир") })
+            TopAppBar(
+                title = { Text("AR.Мир") },
+                actions = {
+                    IconButton(onClick = onAboutClick) {
+                        Icon(Icons.Filled.Info, contentDescription = "О программе")
+                    }
+                }
+            )
         },
         bottomBar = { ContactFooter() },
         snackbarHost = { SnackbarHost(snackbarHostState) }

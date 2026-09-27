@@ -4,4 +4,5 @@ package com.aerospring.arworld.navigation
 object ArWorldDestinations {
     const val HOME = "home"
     const val WHERE_ANYTHING_IS = "where_anything_is"
+    const val ABOUT = "about"
 }

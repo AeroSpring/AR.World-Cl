@@ -13,6 +13,7 @@ import com.aerospring.arworld.feature.arbc.AR_BUSINESS_CARDS_ROUTE
 import com.aerospring.arworld.feature.arbc.ArBcEntryPoint
 import com.aerospring.arworld.feature.home.HomeScreen
 import com.aerospring.arworld.feature.whereanythingis.WhereAnythingIsScreen
+import com.aerospring.arworld.feature.about.AboutScreen
 import com.aerospring.arworld.navigation.ArWorldDestinations
 
 class MainActivity : ComponentActivity() {
@@ -36,11 +37,19 @@ private fun ArWorldNavHost(
     ) {
         composable(ArWorldDestinations.HOME) {
             HomeScreen(
-                onTileClick = { route -> navController.navigate(route) }
+                onTileClick = { route -> navController.navigate(route) },
+                onAboutClick = { navController.navigate(ArWorldDestinations.ABOUT) }
             )
         }
         composable(ArWorldDestinations.WHERE_ANYTHING_IS) {
             WhereAnythingIsScreen(
+                onBackClick = { navController.popBackStack() }
+            )
+        }
+        composable(ArWorldDestinations.ABOUT) {
+            AboutScreen(
+                currentVersionName = BuildConfig.VERSION_NAME,
+                currentVersionCode = BuildConfig.VERSION_CODE,
                 onBackClick = { navController.popBackStack() }
             )
         }

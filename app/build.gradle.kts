@@ -24,6 +24,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -44,6 +45,7 @@ dependencies {
     implementation(project(":feature:arbc"))
     implementation(project(":feature:home"))
     implementation(project(":feature:where-anything-is"))
+    implementation(project(":feature:about"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
