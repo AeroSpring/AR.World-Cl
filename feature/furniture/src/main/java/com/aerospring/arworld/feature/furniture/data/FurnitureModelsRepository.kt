@@ -13,6 +13,7 @@ data class FurnitureModel(
     val modelId: String,
     val modelName: String,
     val url: String, // относительный путь — для скачивания .glb нужно подставить ArWorldServerConfig.BASE_URL
+    val previewUrl: String? = null, // тоже относительный; null, если превью ещё не загружено
 )
 
 @Serializable

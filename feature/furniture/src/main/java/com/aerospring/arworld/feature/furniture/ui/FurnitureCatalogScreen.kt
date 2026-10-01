@@ -1,24 +1,19 @@
 package com.aerospring.arworld.feature.furniture.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.aerospring.arworld.feature.furniture.ar.FurnitureSceneScreen
 import com.aerospring.arworld.feature.furniture.data.FurnitureModel
 import com.aerospring.arworld.feature.furniture.data.FurnitureModelsFetchResult
 import com.aerospring.arworld.feature.furniture.data.FurnitureModelsRepository
+import com.aerospring.arworld.feature.furniture.permissions.RequireCameraPermission
 
-/**
- * ВРЕМЕННЫЙ экран — подтверждает, что каталог тянется и 401 обрабатывается
- * верно (возврат на логин). Настоящая горизонтальная карусель миниатюр
- * внизу экрана + сама AR-сцена — следующий шаг.
- */
+/** Тянет каталог моделей дизайнера, затем передаёт его в AR-сцену. */
 @Composable
 fun FurnitureCatalogScreen(
     token: String,
@@ -38,32 +33,20 @@ fun FurnitureCatalogScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBackClick) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                }
-                Text("Привет, $displayName", style = MaterialTheme.typography.titleMedium)
-            }
-            TextButton(onClick = onLogoutClick) { Text("Выйти") }
+    val currentModels = models
+    when {
+        errorMessage != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(errorMessage!!, color = MaterialTheme.colorScheme.error)
         }
-        Spacer(Modifier.height(16.dp))
-
-        when {
-            errorMessage != null -> Text(errorMessage!!, color = MaterialTheme.colorScheme.error)
-            models == null -> CircularProgressIndicator()
-            models!!.isEmpty() -> Text("Моделей пока нет")
-            else -> LazyColumn {
-                items(models!!) { model ->
-                    ListItem(headlineContent = { Text(model.modelName) })
-                    HorizontalDivider()
-                }
-            }
+        currentModels == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        else -> RequireCameraPermission {
+            FurnitureSceneScreen(
+                models = currentModels,
+                onLogoutClick = onLogoutClick,
+                onBackClick = onBackClick,
+            )
         }
     }
 }

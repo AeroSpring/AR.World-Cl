@@ -47,4 +47,5 @@ dependencies {
 
     implementation(libs.androidx.security.crypto) // новое — EncryptedSharedPreferences
     implementation(libs.androidx.material.icons.extended) // для иконки "назад"
+    implementation("io.coil-kt:coil-compose:2.7.0") // превью моделей в карусели, уже используется в arbc-витрине
 }
