@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -37,6 +38,7 @@ import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
 import com.google.ar.core.Session
+import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
@@ -80,6 +82,7 @@ fun FurnitureSceneScreen(
 
     var pendingModel by remember { mutableStateOf<FurnitureModel?>(null) }
     var currentFrame by remember { mutableStateOf<Frame?>(null) }
+    var currentSession by remember { mutableStateOf<Session?>(null) }
     var placedModels by remember { mutableStateOf<List<PlacedModel>>(emptyList()) }
     var selectedInstanceId by remember { mutableStateOf<String?>(null) }
     var deleteMenuInstanceId by remember { mutableStateOf<String?>(null) }
@@ -93,19 +96,29 @@ fun FurnitureSceneScreen(
     var longPressJob by remember { mutableStateOf<Job?>(null) }
     var longPressTriggered by remember { mutableStateOf(false) }
 
+    // Ключ — instanceId конкретной поставленной модели, НЕ modelUrl. Одна и та же
+    // .glb-модель может быть поставлена несколько раз (например, несколько
+    // одинаковых стульев вокруг стола) — у каждой копии должен быть свой
+    // независимый ModelInstance, иначе Filament путает их (см. баг #5).
     val instanceCache = remember { mutableMapOf<String, ModelInstance>() }
-    val selectionMaterial = remember(materialLoader) {
-        materialLoader.createUnlitColorInstance(Color(0xFF38BDF8)) // то же "брендовое" голубое, что в arbc
+    val isDarkTheme = isSystemInDarkTheme()
+    val selectionColor = if (isDarkTheme) Color.Black else Color.White
+    val selectionMaterial = remember(materialLoader, isDarkTheme) {
+        materialLoader.createUnlitColorInstance(selectionColor.copy(alpha = 0.28f)) // ~72% прозрачности
     }
 
     val tapTolerancePx = with(density) { TAP_TOLERANCE_DP.dp.toPx() }
 
-    suspend fun loadInstance(model: FurnitureModel): ModelInstance? {
-        val cached = instanceCache[model.url]
-        if (cached != null) {
-            return cached
+    LaunchedEffect(statusMessage) {
+        if (statusMessage != null) {
+            delay(3000)
+            statusMessage = null
         }
+    }
 
+    // Без кэширования по URL — у каждой поставленной копии модели должен быть
+    // СВОЙ ModelInstance (см. комментарий у instanceCache ниже).
+    suspend fun loadFreshInstance(model: FurnitureModel): ModelInstance? {
         val fullUrl = "${ArWorldServerConfig.BASE_URL}${model.url}"
         FurnitureGlbDownloader.download(context, fullUrl).collect { state ->
             if (state is FurnitureDownloadState.Error) {
@@ -113,7 +126,7 @@ fun FurnitureSceneScreen(
             }
         }
 
-        val loaded = try {
+        return try {
             withTimeout(45_000) {
                 withContext(modelLoadDispatcher) {
                     suspendCancellableCoroutine<ModelInstance?> { continuation ->
@@ -129,20 +142,31 @@ fun FurnitureSceneScreen(
             statusMessage = "Таймаут загрузки модели (45с)"
             null
         }
-
-        if (loaded != null) {
-            instanceCache[model.url] = loaded
-        }
-        return loaded
     }
 
+    fun floorReferenceY(): Float? {
+        val session = currentSession ?: return null
+        return session.getAllTrackables(Plane::class.java)
+            .filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING }
+            .minOfOrNull { it.centerPose.ty() }
+    }
+
+    // Предпочитаем именно пол: среди попаданий по разным плоскостям берём только
+    // те, что близки к самой нижней известной горизонтальной плоскости — иначе
+    // столы/стулья создают свой "ложный пол" выше настоящего.
     fun floorHitAt(xPx: Float, yPx: Float): Position? {
         val frame = currentFrame ?: return null
+        val floorY = floorReferenceY()
         for (result in frame.hitTest(xPx, yPx)) {
             val trackable = result.trackable
-            if (trackable is Plane && trackable.isPoseInPolygon(result.hitPose)) {
+            if (trackable is Plane &&
+                trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+                trackable.isPoseInPolygon(result.hitPose)
+            ) {
                 val pose = result.hitPose
-                return Position(pose.tx(), pose.ty(), pose.tz())
+                if (floorY == null || kotlin.math.abs(pose.ty() - floorY) < 0.15f) {
+                    return Position(pose.tx(), pose.ty(), pose.tz())
+                }
             }
         }
         return null
@@ -162,7 +186,7 @@ fun FurnitureSceneScreen(
         }
 
         scope.launch {
-            val instance = loadInstance(model)
+            val instance = loadFreshInstance(model)
             if (instance == null) {
                 statusMessage = "Не удалось загрузить модель"
                 return@launch
@@ -171,8 +195,9 @@ fun FurnitureSceneScreen(
             val boundingBox = instance.asset.boundingBox
             val footprintRadius = maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[2])
 
+            val newInstanceId = UUID.randomUUID().toString()
             val candidate = PlacedModel(
-                instanceId = UUID.randomUUID().toString(),
+                instanceId = newInstanceId,
                 modelId = model.modelId,
                 modelName = model.modelName,
                 modelUrl = model.url,
@@ -192,6 +217,7 @@ fun FurnitureSceneScreen(
             if (collides) {
                 statusMessage = "Здесь уже стоит другая модель — наведи камеру левее"
             } else {
+                instanceCache[newInstanceId] = instance
                 placedModels = placedModels + candidate
                 statusMessage = null
             }
@@ -251,10 +277,10 @@ fun FurnitureSceneScreen(
 
     fun deleteModel(instanceId: String) {
         placedModels = placedModels.filterNot { it.instanceId == instanceId }
+        instanceCache.remove(instanceId)
         if (selectedInstanceId == instanceId) selectedInstanceId = null
         if (deleteMenuInstanceId == instanceId) deleteMenuInstanceId = null
     }
-
     Box(modifier = Modifier.fillMaxSize()) {
         ARSceneView(
             modifier = Modifier
@@ -270,7 +296,8 @@ fun FurnitureSceneScreen(
             sessionConfiguration = { _: Session, config ->
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
             },
-            onSessionUpdated = { _: Session, frame: Frame ->
+            onSessionUpdated = { session: Session, frame: Frame ->
+                currentSession = session
                 currentFrame = frame
             },
             onTouchEvent = { event: MotionEvent, _ ->
@@ -345,7 +372,7 @@ fun FurnitureSceneScreen(
         ) {
             placedModels.forEach { placed ->
                 key(placed.instanceId) {
-                    val instance = instanceCache[placed.modelUrl]
+                    val instance = instanceCache[placed.instanceId]
                     if (instance != null) {
                         ModelNode(
                             modelInstance = instance,
@@ -364,6 +391,10 @@ fun FurnitureSceneScreen(
                                 height = 0.002f,
                                 materialInstance = selectionMaterial,
                                 position = placed.position,
+                                apply = {
+                                    this.isVisible = false
+                                    this.isVisible = true
+                                },
                             )
                         }
                     }
@@ -385,7 +416,11 @@ fun FurnitureSceneScreen(
 
         val currentStatusMessage = statusMessage
         if (currentStatusMessage != null) {
-            Snackbar(modifier = Modifier.align(Alignment.Center).padding(16.dp)) {
+            Snackbar(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 120.dp, start = 16.dp, end = 16.dp),
+            ) {
                 Text(currentStatusMessage)
             }
         }
