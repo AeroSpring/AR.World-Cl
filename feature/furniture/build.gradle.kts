@@ -46,4 +46,5 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     implementation(libs.androidx.security.crypto) // новое — EncryptedSharedPreferences
+    implementation(libs.androidx.material.icons.extended) // для иконки "назад"
 }

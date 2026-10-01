@@ -2,26 +2,29 @@ package com.aerospring.arworld.feature.furniture
 
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
+import com.aerospring.arworld.feature.furniture.data.FurnitureAuthRepository
 import com.aerospring.arworld.feature.furniture.data.FurnitureTokenStore
+import com.aerospring.arworld.feature.furniture.ui.FurnitureCatalogScreen
 import com.aerospring.arworld.feature.furniture.ui.FurnitureLoginScreen
+import kotlinx.coroutines.launch
 
-/** Маршрут объявлен здесь же, внутри модуля — не в общем ArWorldDestinations,
- *  по уже принятому в проекте правилу (см. AR_BUSINESS_CARDS_ROUTE в arbc). */
 const val FURNITURE_ROUTE = "ar_furniture"
 
-/**
- * Если токен уже сохранён локально — сразу открываем каталог моделей, минуя
- * логин. Если он успел протухнуть на сервере — это обнаружится на первом же
- * запросе каталога (следующая порция), и экран каталога сам вернёт на логин.
- */
 @Composable
 fun FurnitureEntryPoint(onExit: () -> Unit) {
     val context = LocalContext.current
     val tokenStore = remember { FurnitureTokenStore(context) }
+    val scope = rememberCoroutineScope()
+
     var session by remember {
         mutableStateOf(
             tokenStore.getToken()?.let { token -> tokenStore.getDisplayName()?.let { it to token } }
         )
+    }
+
+    fun clearSession() {
+        tokenStore.clear()
+        session = null
     }
 
     val current = session
@@ -33,6 +36,16 @@ fun FurnitureEntryPoint(onExit: () -> Unit) {
             }
         )
     } else {
-        // Каталог моделей — следующая порция.
+        val (displayName, token) = current
+        FurnitureCatalogScreen(
+            token = token,
+            displayName = displayName,
+            onUnauthorized = { clearSession() },
+            onLogoutClick = {
+                scope.launch { FurnitureAuthRepository.logout(token) }
+                clearSession()
+            },
+            onBackClick = onExit,
+        )
     }
 }
