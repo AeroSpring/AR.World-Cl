@@ -27,6 +27,14 @@ object ApkDownloader {
             connection.readTimeout = 15_000
             connection.connect()
 
+            val responseCode = connection.responseCode
+            if (responseCode != HttpURLConnection.HTTP_OK) {
+                targetFile.delete()
+                trySend(ApkDownloadState.Error("Сервер вернул код $responseCode вместо файла — проверь MIME-тип .apk на сервере"))
+                close()
+                return@callbackFlow
+            }
+
             val totalBytes = connection.contentLength
             var downloadedBytes = 0
             var lastPercent = -1
@@ -48,7 +56,19 @@ object ApkDownloader {
                     }
                 }
             }
-            trySend(ApkDownloadState.Done(targetFile))
+
+            // Проверка целостности: если сервер заявил размер, а скачали меньше — файл обрезан/битый.
+            if (totalBytes > 0 && downloadedBytes < totalBytes) {
+                targetFile.delete()
+                trySend(ApkDownloadState.Error("Файл скачан не полностью ($downloadedBytes из $totalBytes байт)"))
+            } else if (targetFile.length() < 1024) {
+                // Настоящий APK весит как минимум сотни КБ — файл в пару байт/КБ почти наверняка
+                // не APK, а страница ошибки сервера, отданная с кодом 200.
+                targetFile.delete()
+                trySend(ApkDownloadState.Error("Скачанный файл слишком мал (${targetFile.length()} байт) — это не похоже на APK"))
+            } else {
+                trySend(ApkDownloadState.Done(targetFile))
+            }
         } catch (e: Exception) {
             targetFile.delete()
             trySend(ApkDownloadState.Error(e.message ?: "Ошибка загрузки обновления"))

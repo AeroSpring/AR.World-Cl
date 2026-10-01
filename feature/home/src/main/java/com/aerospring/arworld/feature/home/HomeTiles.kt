@@ -37,8 +37,8 @@ val homeTiles = listOf(
         id = "ar_furniture",
         title = "AR.Мебель",
         imageRes = R.drawable.tile_ar_furniture,
-        route = null,
-        launchDateMillis = DEFAULT_LAUNCH_DATE_MILLIS
+        route = "ar_furniture", // ВРЕМЕННО для смоук-теста — раздел ещё не готов к реальным пользователям
+        launchDateMillis = 0L // ВРЕМЕННО — верни DEFAULT_LAUNCH_DATE_MILLIS перед публикацией!
     ),
     HomeTile(
         id = "ar_indoor_guide",

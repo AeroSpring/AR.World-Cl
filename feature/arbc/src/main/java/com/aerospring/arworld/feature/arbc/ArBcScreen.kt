@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.aerospring.arworld.feature.arbc.ar.ArBcSceneView
+import com.aerospring.arworld.feature.arbc.data.ArBcAiAction
 import com.aerospring.arworld.feature.arbc.data.ArBcAiChatResult
 import com.aerospring.arworld.feature.arbc.data.ArBcAiChatTurn
 import com.aerospring.arworld.feature.arbc.data.ArBcAiRepository
@@ -168,9 +169,10 @@ fun ArBcScreen(
                                             role = "assistant",
                                             content = chatResult.reply
                                         )
+                                        chatResult.action?.let { executeAiAction(it, context) }
                                         if (viaVoice) {
                                             textToSpeech?.speak(
-                                                chatResult.reply,
+                                                stripMarkdownForSpeech(chatResult.reply),
                                                 TextToSpeech.QUEUE_FLUSH,
                                                 null,
                                                 "arbc-ai-reply"
@@ -330,4 +332,36 @@ fun ArBcScreen(
             }
         }
     }
+}
+
+/** Выполняет действие, которое попросил сделать ИИ-помощник (перейти на сайт,
+ *  позвонить, открыть письмо) — url/phone/email уже провалидированы на сервере
+ *  (см. _extract_action в arbc.py), здесь только маппинг в системный Intent. */
+private fun executeAiAction(action: ArBcAiAction, context: android.content.Context) {
+    val intent = when (action.type) {
+        "open_url" -> action.url?.let { Intent(Intent.ACTION_VIEW, Uri.parse(it)) }
+        "call_phone" -> action.phone?.let { Intent(Intent.ACTION_DIAL, Uri.parse("tel:$it")) }
+        "compose_email" -> action.email?.let { email ->
+            Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$email")).apply {
+                action.subject?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+            }
+        }
+        else -> null
+    }
+    try {
+        intent?.let { context.startActivity(it) }
+    } catch (e: Exception) {
+        Toast.makeText(context, "Не удалось выполнить действие", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Убирает markdown-разметку перед озвучкой — иначе TextToSpeech читает "**"/"#"
+ *  и другие служебные символы буквально. Визуальный текст в чате не трогаем. */
+private fun stripMarkdownForSpeech(text: String): String {
+    return text
+        .replace(Regex("\\*\\*(.*?)\\*\\*"), "$1")
+        .replace(Regex("__(.*?)__"), "$1")
+        .replace(Regex("`(.*?)`"), "$1")
+        .replace(Regex("(?m)^#{1,6}\\s*"), "")
+        .replace(Regex("(?m)^[-*•]\\s*"), "")
 }

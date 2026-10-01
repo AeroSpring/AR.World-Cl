@@ -11,6 +11,10 @@ import androidx.navigation.compose.rememberNavController
 import com.aerospring.arworld.core.ui.theme.ArWorldTheme
 import com.aerospring.arworld.feature.arbc.AR_BUSINESS_CARDS_ROUTE
 import com.aerospring.arworld.feature.arbc.ArBcEntryPoint
+import com.aerospring.arworld.feature.arbc.AR_BUSINESS_CARDS_ROUTE
+import com.aerospring.arworld.feature.arbc.ArBcEntryPoint
+import com.aerospring.arworld.feature.furniture.FURNITURE_ROUTE
+import com.aerospring.arworld.feature.furniture.FurnitureEntryPoint
 import com.aerospring.arworld.feature.home.HomeScreen
 import com.aerospring.arworld.feature.whereanythingis.WhereAnythingIsScreen
 import com.aerospring.arworld.feature.about.AboutScreen
@@ -55,6 +59,11 @@ private fun ArWorldNavHost(
         }
         composable(AR_BUSINESS_CARDS_ROUTE) {
             ArBcEntryPoint(
+                onExit = { navController.popBackStack() }
+            )
+        }
+        composable(FURNITURE_ROUTE) {
+            FurnitureEntryPoint(
                 onExit = { navController.popBackStack() }
             )
         }

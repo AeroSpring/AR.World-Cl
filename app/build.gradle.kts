@@ -12,8 +12,8 @@ android {
         applicationId = "com.aerospring.arworld"
         minSdk = 26 // ARCore требует минимум 24, берём 26 с запасом под современные API
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     buildTypes {
@@ -45,6 +45,7 @@ dependencies {
     implementation(project(":feature:arbc"))
     implementation(project(":feature:home"))
     implementation(project(":feature:where-anything-is"))
+    implementation(project(":feature:furniture"))
     implementation(project(":feature:about"))
 
     implementation(libs.androidx.core.ktx)

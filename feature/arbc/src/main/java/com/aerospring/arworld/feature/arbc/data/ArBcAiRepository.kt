@@ -13,6 +13,19 @@ import java.net.URL
 @Serializable
 data class ArBcAiChatTurn(val role: String, val content: String)
 
+/** Действие, которое ассистент просит выполнить приложение (перейти на сайт,
+ *  позвонить, открыть письмо) — распарсено и провалидировано уже на сервере,
+ *  здесь просто структура для выполнения. type — "open_url"/"call_phone"/
+ *  "compose_email"; остальные поля заполнены в зависимости от типа. */
+@Serializable
+data class ArBcAiAction(
+    val type: String,
+    val url: String? = null,
+    val phone: String? = null,
+    val email: String? = null,
+    val subject: String? = null
+)
+
 @Serializable
 private data class AiChatRequestBody(
     val message: String,
@@ -20,10 +33,10 @@ private data class AiChatRequestBody(
 )
 
 @Serializable
-private data class AiChatResponseBody(val reply: String)
+private data class AiChatResponseBody(val reply: String, val action: ArBcAiAction? = null)
 
 sealed class ArBcAiChatResult {
-    data class Success(val reply: String) : ArBcAiChatResult()
+    data class Success(val reply: String, val action: ArBcAiAction?) : ArBcAiChatResult()
     data class Error(val message: String) : ArBcAiChatResult()
 }
 
@@ -66,7 +79,7 @@ object ArBcAiRepository {
 
                 val raw = connection.inputStream.bufferedReader().use { it.readText() }
                 val parsed = arBcJson.decodeFromString(AiChatResponseBody.serializer(), raw)
-                ArBcAiChatResult.Success(parsed.reply)
+                ArBcAiChatResult.Success(parsed.reply, parsed.action)
             } catch (e: Exception) {
                 ArBcAiChatResult.Error(e.message ?: "Ошибка обращения к ИИ-помощнику")
             }
