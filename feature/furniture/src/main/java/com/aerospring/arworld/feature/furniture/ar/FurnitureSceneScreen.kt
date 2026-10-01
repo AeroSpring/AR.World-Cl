@@ -91,6 +91,7 @@ fun FurnitureSceneScreen(
     var isTwoFingerGesture by remember { mutableStateOf(false) }
     var lastTwoFingerAngle by remember { mutableStateOf(0f) }
     var longPressJob by remember { mutableStateOf<Job?>(null) }
+    var longPressTriggered by remember { mutableStateOf(false) }
 
     val instanceCache = remember { mutableMapOf<String, ModelInstance>() }
     val selectionMaterial = remember(materialLoader) {
@@ -278,6 +279,7 @@ fun FurnitureSceneScreen(
                         touchDownPosition = Offset(event.x, event.y)
                         touchMoved = false
                         isTwoFingerGesture = false
+                        longPressTriggered = false
                         longPressJob?.cancel()
                         longPressJob = scope.launch {
                             delay(500)
@@ -285,6 +287,7 @@ fun FurnitureSceneScreen(
                             if (tapped != null) {
                                 selectedInstanceId = tapped.instanceId
                                 deleteMenuInstanceId = tapped.instanceId
+                                longPressTriggered = true
                             }
                         }
                     }
@@ -303,7 +306,7 @@ fun FurnitureSceneScreen(
                             val delta = currentAngle - lastTwoFingerAngle
                             lastTwoFingerAngle = currentAngle
                             if (selectedInstanceId != null) {
-                                rotateSelectedModel(delta)
+                                rotateSelectedModel(-delta)
                             }
                         } else if (event.pointerCount == 1) {
                             val current = Offset(event.x, event.y)
@@ -327,13 +330,14 @@ fun FurnitureSceneScreen(
 
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                         longPressJob?.cancel()
-                        if (!touchMoved && !isTwoFingerGesture && event.actionMasked == MotionEvent.ACTION_UP) {
+                        if (!touchMoved && !isTwoFingerGesture && !longPressTriggered && event.actionMasked == MotionEvent.ACTION_UP) {
                             deleteMenuInstanceId = null
                             val tapped = findTappedModel(Offset(event.x, event.y))
                             selectedInstanceId = tapped?.instanceId
                         }
                         isTwoFingerGesture = false
                         touchMoved = false
+                        longPressTriggered = false
                     }
                 }
                 true
@@ -372,10 +376,10 @@ fun FurnitureSceneScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             IconButton(onClick = onBackClick) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = Color.White)
             }
             IconButton(onClick = onLogoutClick) {
-                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти")
+                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти", tint = Color.White)
             }
         }
 
