@@ -1,11 +1,9 @@
 package com.aerospring.arworld.feature.furniture.ar
 
+import android.view.MotionEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
@@ -16,6 +14,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Chair
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.GridOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -40,6 +39,7 @@ import com.google.ar.core.Plane
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
+import io.github.sceneview.ar.scene.PlaneRenderer
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.model.ModelInstance
@@ -49,17 +49,15 @@ import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelLoader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.util.UUID
 import kotlin.coroutines.resume
-import android.view.MotionEvent
-import androidx.compose.ui.unit.Dp
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlin.math.atan2
 
 // Тот же допуск по экрану, что уже проверен в "Где что находится"/arbc для тапа по модели.
@@ -95,11 +93,12 @@ fun FurnitureSceneScreen(
     var lastTwoFingerAngle by remember { mutableStateOf(0f) }
     var longPressJob by remember { mutableStateOf<Job?>(null) }
     var longPressTriggered by remember { mutableStateOf(false) }
+    var showGrid by remember { mutableStateOf(true) }
 
     // Ключ — instanceId конкретной поставленной модели, НЕ modelUrl. Одна и та же
     // .glb-модель может быть поставлена несколько раз (например, несколько
     // одинаковых стульев вокруг стола) — у каждой копии должен быть свой
-    // независимый ModelInstance, иначе Filament путает их (см. баг #5).
+    // независимый ModelInstance, иначе Filament путает их.
     val instanceCache = remember { mutableMapOf<String, ModelInstance>() }
     val isDarkTheme = isSystemInDarkTheme()
     val selectionColor = if (isDarkTheme) Color.Black else Color.White
@@ -117,7 +116,7 @@ fun FurnitureSceneScreen(
     }
 
     // Без кэширования по URL — у каждой поставленной копии модели должен быть
-    // СВОЙ ModelInstance (см. комментарий у instanceCache ниже).
+    // СВОЙ ModelInstance (см. комментарий у instanceCache выше).
     suspend fun loadFreshInstance(model: FurnitureModel): ModelInstance? {
         val fullUrl = "${ArWorldServerConfig.BASE_URL}${model.url}"
         FurnitureGlbDownloader.download(context, fullUrl).collect { state ->
@@ -144,6 +143,8 @@ fun FurnitureSceneScreen(
         }
     }
 
+    // Самая нижняя из сейчас отслеживаемых горизонтальных плоскостей — считаем её полом,
+    // чтобы столы/стулья (они тоже HORIZONTAL_UPWARD_FACING) не создавали "ложный пол" выше.
     fun floorReferenceY(): Float? {
         val session = currentSession ?: return null
         return session.getAllTrackables(Plane::class.java)
@@ -151,22 +152,33 @@ fun FurnitureSceneScreen(
             .minOfOrNull { it.centerPose.ty() }
     }
 
-    // Предпочитаем именно пол: среди попаданий по разным плоскостям берём только
-    // те, что близки к самой нижней известной горизонтальной плоскости — иначе
-    // столы/стулья создают свой "ложный пол" выше настоящего.
-    fun floorHitAt(xPx: Float, yPx: Float): Position? {
+    /** Результат хит-теста по любой поверхности: позиция + начальный разворот
+     *  (только для стены — модель ставим "лицом наружу"; для пола разворот не
+     *  навязываем, он остаётся как задаст пользователь жестом). */
+    data class SurfaceHit(val position: Position, val wallYawDegrees: Float?)
+
+    fun surfaceHitAt(xPx: Float, yPx: Float): SurfaceHit? {
         val frame = currentFrame ?: return null
         val floorY = floorReferenceY()
         for (result in frame.hitTest(xPx, yPx)) {
             val trackable = result.trackable
-            if (trackable is Plane &&
-                trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
-                trackable.isPoseInPolygon(result.hitPose)
-            ) {
-                val pose = result.hitPose
-                if (floorY == null || kotlin.math.abs(pose.ty() - floorY) < 0.15f) {
-                    return Position(pose.tx(), pose.ty(), pose.tz())
+            if (trackable !is Plane || !trackable.isPoseInPolygon(result.hitPose)) continue
+            val pose = result.hitPose
+
+            when (trackable.type) {
+                Plane.Type.HORIZONTAL_UPWARD_FACING -> {
+                    if (floorY == null || kotlin.math.abs(pose.ty() - floorY) < 0.15f) {
+                        return SurfaceHit(Position(pose.tx(), pose.ty(), pose.tz()), wallYawDegrees = null)
+                    }
                 }
+                Plane.Type.VERTICAL -> {
+                    // У ARCore Y-ось позы хит-теста по плоскости всегда направлена вдоль
+                    // её нормали — у стены это горизонтальный вектор "от стены наружу".
+                    val normal = pose.rotateVector(floatArrayOf(0f, 1f, 0f))
+                    val yaw = Math.toDegrees(atan2(normal[0].toDouble(), normal[2].toDouble())).toFloat()
+                    return SurfaceHit(Position(pose.tx(), pose.ty(), pose.tz()), wallYawDegrees = yaw)
+                }
+                else -> {}
             }
         }
         return null
@@ -179,9 +191,9 @@ fun FurnitureSceneScreen(
             return
         }
 
-        val candidatePosition = floorHitAt(viewportWidthPx / 2f, viewportHeightPx / 2f)
-        if (candidatePosition == null) {
-            statusMessage = "Не вижу пол в этой точке — наведи камеру на свободный участок пола"
+        val surfaceHit = surfaceHitAt(viewportWidthPx / 2f, viewportHeightPx / 2f)
+        if (surfaceHit == null) {
+            statusMessage = "Не вижу поверхность в этой точке — наведи камеру на пол или стену"
             return
         }
 
@@ -201,8 +213,8 @@ fun FurnitureSceneScreen(
                 modelId = model.modelId,
                 modelName = model.modelName,
                 modelUrl = model.url,
-                position = candidatePosition,
-                rotationYDegrees = 0f,
+                position = surfaceHit.position,
+                rotationYDegrees = surfaceHit.wallYawDegrees ?: 0f,
                 footprintRadius = footprintRadius,
             )
 
@@ -250,7 +262,7 @@ fun FurnitureSceneScreen(
 
     fun moveSelectedModel(xPx: Float, yPx: Float) {
         val id = selectedInstanceId ?: return
-        val newPosition = floorHitAt(xPx, yPx) ?: return
+        val newPosition = surfaceHitAt(xPx, yPx)?.position ?: return
         val current = placedModels.find { it.instanceId == id } ?: return
         val candidate = current.copy(position = newPosition)
 
@@ -281,6 +293,7 @@ fun FurnitureSceneScreen(
         if (selectedInstanceId == instanceId) selectedInstanceId = null
         if (deleteMenuInstanceId == instanceId) deleteMenuInstanceId = null
     }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ARSceneView(
             modifier = Modifier
@@ -292,9 +305,9 @@ fun FurnitureSceneScreen(
             engine = engine,
             modelLoader = modelLoader,
             materialLoader = materialLoader,
-            planeRenderer = true,
+            planeRenderer = showGrid,
             sessionConfiguration = { _: Session, config ->
-                config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
+                config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
             },
             onSessionUpdated = { session: Session, frame: Frame ->
                 currentSession = session
@@ -386,16 +399,23 @@ fun FurnitureSceneScreen(
                         )
                         if (placed.instanceId == selectedInstanceId) {
                             // Тонкое кольцо на полу под выделенной моделью — визуальный маркер выделения.
-                            CylinderNode(
-                                radius = placed.footprintRadius,
-                                height = 0.002f,
-                                materialInstance = selectionMaterial,
-                                position = placed.position,
-                                apply = {
-                                    this.isVisible = false
-                                    this.isVisible = true
-                                },
-                            )
+                            // key() по позиции — принудительное пересоздание узла при каждом сдвиге,
+                            // а не попытка обновить уже существующий: CylinderNode (в отличие от
+                            // ModelNode) не подхватывает изменение position реактивно в этой версии
+                            // библиотеки, а apply{} с isVisible-воркэраундом толкает состояние в
+                            // Filament только при СОЗДАНИИ узла — так что пересоздаём его каждый раз.
+                            key(placed.position) {
+                                CylinderNode(
+                                    radius = placed.footprintRadius,
+                                    height = 0.002f,
+                                    materialInstance = selectionMaterial,
+                                    position = placed.position,
+                                    apply = {
+                                        this.isVisible = false
+                                        this.isVisible = true
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -412,6 +432,13 @@ fun FurnitureSceneScreen(
             IconButton(onClick = onLogoutClick) {
                 Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти", tint = Color.White)
             }
+            IconButton(onClick = { showGrid = !showGrid }) {
+                Icon(
+                    if (showGrid) Icons.Default.GridOff else Icons.Default.GridOn,
+                    contentDescription = if (showGrid) "Скрыть сетку" else "Показать сетку",
+                    tint = Color.White,
+                )
+            }
         }
 
         val currentStatusMessage = statusMessage
@@ -426,8 +453,6 @@ fun FurnitureSceneScreen(
         }
 
         // Меню "удалить" — простая кнопка по центру экрана при активном long-press.
-        // Позиционировать её точно над моделью в экранных координатах можно будет
-        // доточить отдельно, если понадобится — для MVP центр экрана читается нормально.
         val menuId = deleteMenuInstanceId
         if (menuId != null) {
             Box(modifier = Modifier.align(Alignment.Center).padding(16.dp)) {

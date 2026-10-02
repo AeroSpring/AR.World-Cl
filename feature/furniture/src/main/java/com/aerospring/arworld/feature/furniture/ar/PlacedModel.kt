@@ -22,10 +22,14 @@ data class PlacedModel(
     val footprintRadius: Float,
 )
 
-/** Пересекаются ли две поставленные модели (по кругам в плоскости XZ). */
+/** Пересекаются ли две поставленные модели — честное 3D-расстояние между точками.
+ *  Работает единообразно и для пола, и для стены (кругов на полу отдельно
+ *  считать не нужно — на одной поверхности 3D-расстояние ≈ расстояние по самой
+ *  поверхности). */
 fun PlacedModel.overlapsWith(other: PlacedModel): Boolean {
     val dx = position.x - other.position.x
+    val dy = position.y - other.position.y
     val dz = position.z - other.position.z
-    val distance = kotlin.math.sqrt(dx * dx + dz * dz)
+    val distance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
     return distance < (footprintRadius + other.footprintRadius)
 }
