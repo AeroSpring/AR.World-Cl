@@ -40,6 +40,7 @@ import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.scene.PlaneRenderer
+import io.github.sceneview.ar.scene.PlaneRendererBase
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.model.ModelInstance
@@ -60,7 +61,6 @@ import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.math.atan2
 
-// Тот же допуск по экрану, что уже проверен в "Где что находится"/arbc для тапа по модели.
 private const val TAP_TOLERANCE_DP = 70f
 
 @Composable
@@ -96,16 +96,13 @@ fun FurnitureSceneScreen(
     var showGrid by remember { mutableStateOf(true) }
     var horizontalPlaneCount by remember { mutableStateOf(0) }
     var verticalPlaneCount by remember { mutableStateOf(0) }
+    var settledInstanceIds by remember { mutableStateOf(setOf<String>()) }
 
-    // Ключ — instanceId конкретной поставленной модели, НЕ modelUrl. Одна и та же
-    // .glb-модель может быть поставлена несколько раз (например, несколько
-    // одинаковых стульев вокруг стола) — у каждой копии должен быть свой
-    // независимый ModelInstance, иначе Filament путает их.
     val instanceCache = remember { mutableMapOf<String, ModelInstance>() }
     val isDarkTheme = isSystemInDarkTheme()
     val selectionColor = if (isDarkTheme) Color.Black else Color.White
     val selectionMaterial = remember(materialLoader, isDarkTheme) {
-        materialLoader.createUnlitColorInstance(selectionColor.copy(alpha = 0.28f)) // ~72% прозрачности
+        materialLoader.createUnlitColorInstance(selectionColor.copy(alpha = 0.28f))
     }
 
     val tapTolerancePx = with(density) { TAP_TOLERANCE_DP.dp.toPx() }
@@ -117,8 +114,15 @@ fun FurnitureSceneScreen(
         }
     }
 
-    // Без кэширования по URL — у каждой поставленной копии модели должен быть
-    // СВОЙ ModelInstance (см. комментарий у instanceCache выше).
+    LaunchedEffect(placedModels.map { it.instanceId }) {
+        for (placed in placedModels) {
+            if (placed.instanceId !in settledInstanceIds) {
+                delay(100)
+                settledInstanceIds = settledInstanceIds + placed.instanceId
+            }
+        }
+    }
+
     suspend fun loadFreshInstance(model: FurnitureModel): ModelInstance? {
         val fullUrl = "${ArWorldServerConfig.BASE_URL}${model.url}"
         FurnitureGlbDownloader.download(context, fullUrl).collect { state ->
@@ -145,8 +149,6 @@ fun FurnitureSceneScreen(
         }
     }
 
-    // Самая нижняя из сейчас отслеживаемых горизонтальных плоскостей — считаем её полом,
-    // чтобы столы/стулья (они тоже HORIZONTAL_UPWARD_FACING) не создавали "ложный пол" выше.
     fun floorReferenceY(): Float? {
         val session = currentSession ?: return null
         return session.getAllTrackables(Plane::class.java)
@@ -154,34 +156,52 @@ fun FurnitureSceneScreen(
             .minOfOrNull { it.centerPose.ty() }
     }
 
-    /** Результат хит-теста по любой поверхности: позиция + начальный разворот
-     *  (только для стены — модель ставим "лицом наружу"; для пола разворот не
-     *  навязываем, он остаётся как задаст пользователь жестом). */
-    data class SurfaceHit(val position: Position, val wallYawDegrees: Float?)
+    data class SurfaceHit(val position: Position, val wallYawDegrees: Float?, val surfaceType: SurfaceType)
 
-    fun surfaceHitAt(xPx: Float, yPx: Float): SurfaceHit? {
+    /**
+     * restrictTo — если задан, ищем попадание только по этому типу поверхности
+     * (используется при перетаскивании: модель с пола не должна случайно
+     * "перескочить" на стену и наоборот).
+     *
+     * Для пола берём БЛИЖАЙШЕЕ подходящее попадание (frame.hitTest уже
+     * сортирует от ближайшего), для стены — наоборот, САМОЕ ДАЛЬНЕЕ из
+     * найденных вертикальных: иначе случайная близкая деталь (угол дверного
+     * проёма, край мебели) перехватывает размещение раньше настоящей дальней
+     * стены, в которую целился пользователь.
+     */
+    fun surfaceHitAt(xPx: Float, yPx: Float, restrictTo: SurfaceType? = null): SurfaceHit? {
         val frame = currentFrame ?: return null
+        val results = frame.hitTest(xPx, yPx)
         val floorY = floorReferenceY()
-        for (result in frame.hitTest(xPx, yPx)) {
-            val trackable = result.trackable
-            if (trackable !is Plane || !trackable.isPoseInPolygon(result.hitPose)) continue
-            val pose = result.hitPose
 
-            when (trackable.type) {
-                Plane.Type.HORIZONTAL_UPWARD_FACING -> {
+        if (restrictTo != SurfaceType.WALL) {
+            for (result in results) {
+                val trackable = result.trackable
+                if (trackable is Plane &&
+                    trackable.type == Plane.Type.HORIZONTAL_UPWARD_FACING &&
+                    trackable.isPoseInPolygon(result.hitPose)
+                ) {
+                    val pose = result.hitPose
                     if (floorY == null || kotlin.math.abs(pose.ty() - floorY) < 0.15f) {
-                        return SurfaceHit(Position(pose.tx(), pose.ty(), pose.tz()), wallYawDegrees = null)
+                        return SurfaceHit(Position(pose.tx(), pose.ty(), pose.tz()), null, SurfaceType.FLOOR)
                     }
                 }
-                Plane.Type.VERTICAL -> {
-                    // У ARCore Y-ось позы хит-теста по плоскости всегда направлена вдоль
-                    // её нормали — у стены это горизонтальный вектор "от стены наружу".
-                    val normal = pose.rotateVector(floatArrayOf(0f, 1f, 0f))
-                    val yaw = Math.toDegrees(atan2(normal[0].toDouble(), normal[2].toDouble())).toFloat()
-                    return SurfaceHit(Position(pose.tx(), pose.ty(), pose.tz()), wallYawDegrees = yaw)
-                }
-                else -> {}
             }
+            if (restrictTo == SurfaceType.FLOOR) return null
+        }
+
+        val farthestWallHit = results
+            .filter { result ->
+                val trackable = result.trackable
+                trackable is Plane && trackable.type == Plane.Type.VERTICAL && trackable.isPoseInPolygon(result.hitPose)
+            }
+            .maxByOrNull { it.distance }
+
+        if (farthestWallHit != null) {
+            val pose = farthestWallHit.hitPose
+            val normal = pose.rotateVector(floatArrayOf(0f, 1f, 0f))
+            val yaw = Math.toDegrees(atan2(normal[0].toDouble(), normal[2].toDouble())).toFloat()
+            return SurfaceHit(Position(pose.tx(), pose.ty(), pose.tz()), yaw, SurfaceType.WALL)
         }
         return null
     }
@@ -207,7 +227,10 @@ fun FurnitureSceneScreen(
             }
 
             val boundingBox = instance.asset.boundingBox
-            val footprintRadius = maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[2])
+            val footprintRadius = when (surfaceHit.surfaceType) {
+                SurfaceType.FLOOR -> maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[2])
+                SurfaceType.WALL -> maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[1])
+            }
 
             val newInstanceId = UUID.randomUUID().toString()
             val candidate = PlacedModel(
@@ -216,7 +239,9 @@ fun FurnitureSceneScreen(
                 modelName = model.modelName,
                 modelUrl = model.url,
                 position = surfaceHit.position,
+                surfaceType = surfaceHit.surfaceType,
                 rotationYDegrees = surfaceHit.wallYawDegrees ?: 0f,
+                tiltDegrees = 0f,
                 footprintRadius = footprintRadius,
             )
 
@@ -238,8 +263,6 @@ fun FurnitureSceneScreen(
         }
     }
 
-    /** Тот же самый кастомный хит-тест по проекции, что и в ArCameraView/ArBcSceneView —
-     *  ищем ближайшую поставленную модель, чья экранная проекция попадает в допуск. */
     fun findTappedModel(tapOffset: Offset): PlacedModel? {
         val frame = currentFrame ?: return null
         var closest: PlacedModel? = null
@@ -264,8 +287,8 @@ fun FurnitureSceneScreen(
 
     fun moveSelectedModel(xPx: Float, yPx: Float) {
         val id = selectedInstanceId ?: return
-        val newPosition = surfaceHitAt(xPx, yPx)?.position ?: return
         val current = placedModels.find { it.instanceId == id } ?: return
+        val newPosition = surfaceHitAt(xPx, yPx, restrictTo = current.surfaceType)?.position ?: return
         val candidate = current.copy(position = newPosition)
 
         var collides = false
@@ -280,12 +303,16 @@ fun FurnitureSceneScreen(
         }
     }
 
+    /** Для FLOOR крутим rotationYDegrees (вертикальная ось, как раньше).
+     *  Для WALL крутим tiltDegrees — наклон вокруг нормали стены (как картина). */
     fun rotateSelectedModel(deltaDegrees: Float) {
         val id = selectedInstanceId ?: return
-        // Поворот не меняет площадь круга-footprint — проверка пересечения не нужна,
-        // см. пометку в PlacedModel.kt.
-        placedModels = placedModels.map {
-            if (it.instanceId == id) it.copy(rotationYDegrees = it.rotationYDegrees + deltaDegrees) else it
+        placedModels = placedModels.map { placed ->
+            if (placed.instanceId != id) return@map placed
+            when (placed.surfaceType) {
+                SurfaceType.FLOOR -> placed.copy(rotationYDegrees = placed.rotationYDegrees + deltaDegrees)
+                SurfaceType.WALL -> placed.copy(tiltDegrees = placed.tiltDegrees + deltaDegrees)
+            }
         }
     }
 
@@ -396,29 +423,44 @@ fun FurnitureSceneScreen(
                 key(placed.instanceId) {
                     val instance = instanceCache[placed.instanceId]
                     if (instance != null) {
-                        ModelNode(
-                            modelInstance = instance,
-                            autoAnimate = false,
+                        val isSettled = placed.instanceId in settledInstanceIds
+                        // Родитель — только разворот "от стены" (yaw); ребёнок — только
+                        // наклон (roll) УЖЕ в повёрнутых координатах родителя. Так ось
+                        // наклона гарантированно = нормаль стены, независимо от порядка
+                        // композиции Эйлеровых углов внутри библиотеки.
+                        Node(
                             position = placed.position,
-                            rotation = Rotation(0f, placed.rotationYDegrees, 0f),
+                            rotation = if (isSettled) Rotation(0f, placed.rotationYDegrees, 0f) else Rotation(0f, 0f, 0f),
                             apply = {
                                 this.isVisible = false
                                 this.isVisible = true
                             },
-                        )
+                        ) {
+                            ModelNode(
+                                modelInstance = instance,
+                                autoAnimate = false,
+                                rotation = if (isSettled) Rotation(0f, 0f, placed.tiltDegrees) else Rotation(0f, 0f, 0f),
+                                apply = {
+                                    this.isVisible = false
+                                    this.isVisible = true
+                                },
+                            )
+                        }
                         if (placed.instanceId == selectedInstanceId) {
-                            // Тонкое кольцо на полу под выделенной моделью — визуальный маркер выделения.
-                            // key() по позиции — принудительное пересоздание узла при каждом сдвиге,
-                            // а не попытка обновить уже существующий: CylinderNode (в отличие от
-                            // ModelNode) не подхватывает изменение position реактивно в этой версии
-                            // библиотеки, а apply{} с isVisible-воркэраундом толкает состояние в
-                            // Filament только при СОЗДАНИИ узла — так что пересоздаём его каждый раз.
-                            key(placed.position) {
+                            key(placed.position, placed.surfaceType) {
                                 CylinderNode(
                                     radius = placed.footprintRadius,
                                     height = 0.002f,
                                     materialInstance = selectionMaterial,
                                     position = placed.position,
+                                    // ВАЖНО, проверь на устройстве: для WALL кольцо должно лечь
+                                    // вровень со стеной (развернуться "ребром к тебе" в плашку,
+                                    // не лежать плашмя в воздухе). Если выглядит наоборот —
+                                    // скажи, поменяю 90f на -90f или переставлю оси.
+                                    rotation = if (placed.surfaceType == SurfaceType.WALL)
+                                        Rotation(90f, placed.rotationYDegrees, 0f)
+                                    else
+                                        Rotation(0f, 0f, 0f),
                                     apply = {
                                         this.isVisible = false
                                         this.isVisible = true
@@ -467,7 +509,6 @@ fun FurnitureSceneScreen(
             }
         }
 
-        // Меню "удалить" — простая кнопка по центру экрана при активном long-press.
         val menuId = deleteMenuInstanceId
         if (menuId != null) {
             Box(modifier = Modifier.align(Alignment.Center).padding(16.dp)) {
