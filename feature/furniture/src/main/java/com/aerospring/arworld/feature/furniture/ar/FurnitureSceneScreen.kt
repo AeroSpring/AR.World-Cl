@@ -94,6 +94,8 @@ fun FurnitureSceneScreen(
     var longPressJob by remember { mutableStateOf<Job?>(null) }
     var longPressTriggered by remember { mutableStateOf(false) }
     var showGrid by remember { mutableStateOf(true) }
+    var horizontalPlaneCount by remember { mutableStateOf(0) }
+    var verticalPlaneCount by remember { mutableStateOf(0) }
 
     // Ключ — instanceId конкретной поставленной модели, НЕ modelUrl. Одна и та же
     // .glb-модель может быть поставлена несколько раз (например, несколько
@@ -312,6 +314,13 @@ fun FurnitureSceneScreen(
             onSessionUpdated = { session: Session, frame: Frame ->
                 currentSession = session
                 currentFrame = frame
+                val planes = session.getAllTrackables(Plane::class.java)
+                horizontalPlaneCount = planes.count {
+                    it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.trackingState == TrackingState.TRACKING
+                }
+                verticalPlaneCount = planes.count {
+                    it.type == Plane.Type.VERTICAL && it.trackingState == TrackingState.TRACKING
+                }
             },
             onTouchEvent = { event: MotionEvent, _ ->
                 when (event.actionMasked) {
@@ -440,6 +449,12 @@ fun FurnitureSceneScreen(
                 )
             }
         }
+
+        Text(
+            "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount",
+            color = Color.White,
+            modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+        )
 
         val currentStatusMessage = statusMessage
         if (currentStatusMessage != null) {
