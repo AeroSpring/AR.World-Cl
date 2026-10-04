@@ -20,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -39,8 +40,6 @@ import com.google.ar.core.Plane
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
-import io.github.sceneview.ar.scene.PlaneRenderer
-import io.github.sceneview.ar.scene.PlaneRendererBase
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.model.ModelInstance
@@ -53,10 +52,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.math.atan2
@@ -79,6 +80,8 @@ fun FurnitureSceneScreen(
     val modelLoadDispatcher = remember { Dispatchers.IO.limitedParallelism(3) }
 
     var pendingModel by remember { mutableStateOf<FurnitureModel?>(null) }
+    var loadingModelId by remember { mutableStateOf<String?>(null) }
+    var loadProgressText by remember { mutableStateOf("") }
     var currentFrame by remember { mutableStateOf<Frame?>(null) }
     var currentSession by remember { mutableStateOf<Session?>(null) }
     var placedModels by remember { mutableStateOf<List<PlacedModel>>(emptyList()) }
@@ -126,10 +129,21 @@ fun FurnitureSceneScreen(
     suspend fun loadFreshInstance(model: FurnitureModel): ModelInstance? {
         val fullUrl = "${ArWorldServerConfig.BASE_URL}${model.url}"
         FurnitureGlbDownloader.download(context, fullUrl).collect { state ->
-            if (state is FurnitureDownloadState.Error) {
-                statusMessage = "Не удалось скачать модель: ${state.message}"
+            when (state) {
+                is FurnitureDownloadState.Progress -> {
+                    loadProgressText = if (state.isMegabytes) {
+                        "Скачивание: ${state.percent} МБ"
+                    } else {
+                        "Скачивание: ${state.percent}%"
+                    }
+                }
+                is FurnitureDownloadState.Done -> Unit
+                is FurnitureDownloadState.Error -> {
+                    statusMessage = "Не удалось скачать модель: ${state.message}"
+                }
             }
         }
+        loadProgressText = "Подготовка модели…"
 
         return try {
             withTimeout(45_000) {
@@ -207,6 +221,9 @@ fun FurnitureSceneScreen(
     }
 
     fun placePendingModel() {
+        // Пока грузится/садится предыдущая модель — новые нажатия игнорируем
+        if (loadingModelId != null) return
+
         val model = pendingModel ?: return
         if (viewportWidthPx == 0 || viewportHeightPx == 0) {
             statusMessage = "Сцена ещё не готова, подожди секунду"
@@ -219,46 +236,61 @@ fun FurnitureSceneScreen(
             return
         }
 
+        // Флаг ставим синхронно, ДО launch: иначе два быстрых тапа в одном кадре
+        // оба пройдут проверку выше.
+        loadingModelId = model.modelId
+        loadProgressText = "Подключаюсь…"
+        statusMessage = null
+
         scope.launch {
-            val instance = loadFreshInstance(model)
-            if (instance == null) {
-                statusMessage = "Не удалось загрузить модель"
-                return@launch
-            }
-
-            val boundingBox = instance.asset.boundingBox
-            val footprintRadius = when (surfaceHit.surfaceType) {
-                SurfaceType.FLOOR -> maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[2])
-                SurfaceType.WALL -> maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[1])
-            }
-
-            val newInstanceId = UUID.randomUUID().toString()
-            val candidate = PlacedModel(
-                instanceId = newInstanceId,
-                modelId = model.modelId,
-                modelName = model.modelName,
-                modelUrl = model.url,
-                position = surfaceHit.position,
-                surfaceType = surfaceHit.surfaceType,
-                rotationYDegrees = surfaceHit.wallYawDegrees ?: 0f,
-                tiltDegrees = 0f,
-                footprintRadius = footprintRadius,
-            )
-
-            var collides = false
-            for (placed in placedModels) {
-                if (placed.overlapsWith(candidate)) {
-                    collides = true
-                    break
+            try {
+                val instance = loadFreshInstance(model)
+                if (instance == null) {
+                    statusMessage = "Не удалось загрузить модель"
+                    return@launch
                 }
-            }
 
-            if (collides) {
-                statusMessage = "Здесь уже стоит другая модель — наведи камеру левее"
-            } else {
-                instanceCache[newInstanceId] = instance
-                placedModels = placedModels + candidate
-                statusMessage = null
+                val boundingBox = instance.asset.boundingBox
+                val footprintRadius = when (surfaceHit.surfaceType) {
+                    SurfaceType.FLOOR -> maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[2])
+                    SurfaceType.WALL -> maxOf(boundingBox.halfExtent[0], boundingBox.halfExtent[1])
+                }
+
+                val newInstanceId = UUID.randomUUID().toString()
+                val candidate = PlacedModel(
+                    instanceId = newInstanceId,
+                    modelId = model.modelId,
+                    modelName = model.modelName,
+                    modelUrl = model.url,
+                    position = surfaceHit.position,
+                    surfaceType = surfaceHit.surfaceType,
+                    rotationYDegrees = surfaceHit.wallYawDegrees ?: 0f,
+                    tiltDegrees = 0f,
+                    footprintRadius = footprintRadius,
+                )
+
+                var collides = false
+                for (placed in placedModels) {
+                    if (placed.overlapsWith(candidate)) {
+                        collides = true
+                        break
+                    }
+                }
+
+                if (collides) {
+                    statusMessage = "Здесь уже стоит другая модель — наведи камеру левее"
+                } else {
+                    instanceCache[newInstanceId] = instance
+                    placedModels = placedModels + candidate
+                    statusMessage = null
+                    // Держим блокировку, пока модель не "осела" в сцене (~100 мс).
+                    // Страховка: не дольше 2 секунд, чтобы карусель не зависла навсегда.
+                    withTimeoutOrNull(2_000) {
+                        snapshotFlow { newInstanceId in settledInstanceIds }.first { it }
+                    }
+                }
+            } finally {
+                loadingModelId = null
             }
         }
     }
@@ -523,6 +555,60 @@ fun FurnitureSceneScreen(
             }
         }
 
+        val loadingId = loadingModelId
+        if (loadingId != null) {
+            val loadingName = models.find { it.modelId == loadingId }?.modelName.orEmpty()
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 120.dp, start = 16.dp, end = 16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                tonalElevation = 4.dp,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Column {
+                        Text("Загружаю «$loadingName»")
+                        Text(loadProgressText, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        val selectedModelName = placedModels.find { it.instanceId == selectedInstanceId }?.modelName
+        if (selectedModelName != null &&
+            loadingId == null &&
+            currentStatusMessage == null &&
+            deleteMenuInstanceId == null
+        ) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 120.dp, start = 16.dp, end = 16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                tonalElevation = 4.dp,
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("Выбрано: «$selectedModelName»")
+                    Text(
+                        "Тяни пальцем — переместить · двумя пальцами — повернуть · долгое нажатие — удалить",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
         LazyRow(
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -531,6 +617,8 @@ fun FurnitureSceneScreen(
                 ModelThumbnail(
                     model = model,
                     isSelected = model.modelId == pendingModel?.modelId,
+                    isLoading = model.modelId == loadingModelId,
+                    isLocked = loadingModelId != null,
                     onClick = {
                         pendingModel = model
                         placePendingModel()
@@ -542,22 +630,28 @@ fun FurnitureSceneScreen(
 }
 
 @Composable
-private fun ModelThumbnail(model: FurnitureModel, isSelected: Boolean, onClick: () -> Unit) {
-    Column(modifier = Modifier.width(72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        val boxModifier = if (isSelected) {
-            Modifier
-                .size(64.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
-                .clickable { onClick() }
-        } else {
-            Modifier
-                .size(64.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable { onClick() }
-        }
+private fun ModelThumbnail(
+    model: FurnitureModel,
+    isSelected: Boolean,
+    isLoading: Boolean,
+    isLocked: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .width(72.dp)
+            .alpha(if (isLocked && !isLoading) 0.4f else 1f),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        val highlighted = isSelected || isLoading
+        val boxModifier = Modifier
+            .size(64.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .let {
+                if (highlighted) it.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)) else it
+            }
+            .clickable(enabled = !isLocked) { onClick() }
 
         Box(modifier = boxModifier, contentAlignment = Alignment.Center) {
             if (model.previewUrl != null) {
@@ -569,6 +663,18 @@ private fun ModelThumbnail(model: FurnitureModel, isSelected: Boolean, onClick: 
                 )
             } else {
                 Icon(Icons.Default.Chair, contentDescription = model.modelName, tint = Color.Gray)
+            }
+            if (isLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 3.dp,
+                        color = Color.White,
+                    )
+                }
             }
         }
         Spacer(Modifier.height(4.dp))
