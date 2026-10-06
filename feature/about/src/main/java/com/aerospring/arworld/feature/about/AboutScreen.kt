@@ -110,7 +110,7 @@ fun AboutScreen(
                                 ApkDownloader.download(context, s.apkUrl).collect { downloadState ->
                                     when (downloadState) {
                                         is ApkDownloadState.Progress -> state = ScreenState.Downloading(downloadState.percent)
-                                        is ApkDownloadState.Done -> installApk(context, downloadState.file)
+                                        is ApkDownloadState.Done -> installApk(context, downloadState.uri)
                                         is ApkDownloadState.Error -> state = ScreenState.DownloadError(downloadState.message)
                                     }
                                 }

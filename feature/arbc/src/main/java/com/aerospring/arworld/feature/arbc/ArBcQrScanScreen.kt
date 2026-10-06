@@ -118,7 +118,7 @@ fun ArBcQrScanScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Сканировать AR.Визитку") },
+                title = { Text("Сканирование визитки") },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(

@@ -2,14 +2,11 @@ package com.aerospring.arworld.feature.about
 
 import android.content.Context
 import android.content.Intent
-import androidx.core.content.FileProvider
-import java.io.File
+import android.net.Uri
 
-/** Запускает системный установщик поверх скачанного .apk через FileProvider (безопасный content://). */
-fun installApk(context: Context, file: File) {
-    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+fun installApk(context: Context, apkUri: Uri) {
     val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, "application/vnd.android.package-archive")
+        setDataAndType(apkUri, "application/vnd.android.package-archive")
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }

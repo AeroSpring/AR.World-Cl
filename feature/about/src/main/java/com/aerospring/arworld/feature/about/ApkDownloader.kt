@@ -1,80 +1,74 @@
 package com.aerospring.arworld.feature.about
 
+import android.app.DownloadManager
 import android.content.Context
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
+import android.net.Uri
+import android.os.Environment
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.flowOn
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
+import kotlinx.coroutines.flow.flow
 
 sealed class ApkDownloadState {
     data class Progress(val percent: Int) : ApkDownloadState()
-    data class Done(val file: File) : ApkDownloadState()
+    data class Done(val uri: Uri) : ApkDownloadState()
     data class Error(val message: String) : ApkDownloadState()
 }
 
+/**
+ * Загрузка через системный DownloadManager — тот же механизм, что использует Chrome.
+ * Ручная загрузка через HttpURLConnection оказалась медленной и обрывалась на больших файлах
+ * (Connection reset / Software caused connection abort) — DownloadManager лишён этих проблем,
+ * умеет повторные попытки и не блокируется VPN/фоном так, как наш собственный цикл чтения байт.
+ */
 object ApkDownloader {
-    fun download(context: Context, url: String): Flow<ApkDownloadState> = callbackFlow {
-        val targetDir = File(context.cacheDir, "apk_updates").apply { mkdirs() }
-        val targetFile = File(targetDir, "update.apk")
-
+    fun download(context: Context, url: String): Flow<ApkDownloadState> = flow {
         try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 15_000
-            connection.connect()
+            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val request = DownloadManager.Request(Uri.parse(url))
+                .setTitle("Обновление AR.Мир")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "update.apk")
+                .setAllowedOverMetered(true)
+                .setAllowedOverRoaming(true)
 
-            val responseCode = connection.responseCode
-            if (responseCode != HttpURLConnection.HTTP_OK) {
-                targetFile.delete()
-                trySend(ApkDownloadState.Error("Сервер вернул код $responseCode вместо файла — проверь MIME-тип .apk на сервере"))
-                close()
-                return@callbackFlow
-            }
+            val downloadId = downloadManager.enqueue(request)
 
-            val totalBytes = connection.contentLength
-            var downloadedBytes = 0
-            var lastPercent = -1
+            while (true) {
+                val cursor = downloadManager.query(DownloadManager.Query().setFilterById(downloadId))
+                    ?: run {
+                        emit(ApkDownloadState.Error("Не удалось отследить загрузку"))
+                        return@flow
+                    }
 
-            connection.inputStream.use { input ->
-                targetFile.outputStream().use { output ->
-                    val buffer = ByteArray(8 * 1024)
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        downloadedBytes += read
-                        if (totalBytes > 0) {
-                            val percent = (downloadedBytes * 100 / totalBytes).coerceIn(0, 100)
-                            if (percent != lastPercent) {
-                                lastPercent = percent
-                                trySend(ApkDownloadState.Progress(percent))
+                cursor.use {
+                    if (!it.moveToFirst()) {
+                        emit(ApkDownloadState.Error("Загрузка не найдена в системе"))
+                        return@flow
+                    }
+
+                    when (it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))) {
+                        DownloadManager.STATUS_SUCCESSFUL -> {
+                            emit(ApkDownloadState.Done(downloadManager.getUriForDownloadedFile(downloadId)))
+                            return@flow
+                        }
+                        DownloadManager.STATUS_FAILED -> {
+                            val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                            emit(ApkDownloadState.Error("Загрузка не удалась (код ошибки $reason)"))
+                            return@flow
+                        }
+                        else -> {
+                            val downloaded = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                            val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                            if (total > 0) {
+                                emit(ApkDownloadState.Progress(((downloaded * 100) / total).toInt().coerceIn(0, 100)))
                             }
                         }
                     }
                 }
-            }
-
-            // Проверка целостности: если сервер заявил размер, а скачали меньше — файл обрезан/битый.
-            if (totalBytes > 0 && downloadedBytes < totalBytes) {
-                targetFile.delete()
-                trySend(ApkDownloadState.Error("Файл скачан не полностью ($downloadedBytes из $totalBytes байт)"))
-            } else if (targetFile.length() < 1024) {
-                // Настоящий APK весит как минимум сотни КБ — файл в пару байт/КБ почти наверняка
-                // не APK, а страница ошибки сервера, отданная с кодом 200.
-                targetFile.delete()
-                trySend(ApkDownloadState.Error("Скачанный файл слишком мал (${targetFile.length()} байт) — это не похоже на APK"))
-            } else {
-                trySend(ApkDownloadState.Done(targetFile))
+                delay(400)
             }
         } catch (e: Exception) {
-            targetFile.delete()
-            trySend(ApkDownloadState.Error(e.message ?: "Ошибка загрузки обновления"))
+            emit(ApkDownloadState.Error(e.message ?: "Ошибка загрузки обновления"))
         }
-
-        close()
-        awaitClose { }
-    }.flowOn(Dispatchers.IO)
+    }
 }
