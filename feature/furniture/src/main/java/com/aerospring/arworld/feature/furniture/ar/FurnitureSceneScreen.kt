@@ -125,8 +125,18 @@ private class ModelNodeHandles {
     var scalePoked = false
     var lastForceMs = 0L
     var nudgeSign = 1f
+    var garbageFrames = 0
+    // Для детектора «скачков» мировой трансформации при неизменном состоянии (диагностика).
+    var lastWorld: FloatArray? = null
+    var lastStateKey = Float.NaN
+    var lastJumpLogMs = 0L
     // Мировая ось Z модели (нормаль «от стены»/направление по полу): не зависит от наклона tilt.
     var modelWorldZ: (() -> FloatArray)? = null
+    // «Показать после проверки»: модель рождается скрытой и показывается, когда мировое положение и
+    // разворот совпали с состоянием (или по таймауту).
+    var revealed = false
+    var okFrames = 0
+    var modelSetVisible: ((Boolean) -> Unit)? = null
 }
 
 @Composable
@@ -182,6 +192,8 @@ fun FurnitureSceneScreen(
     // оказывается далеко от состояния (по видео 21:07 и 21:23 это всегда совпадало с пропавшей
     // моделью). Тогда модель пересоздаётся на том же месте (не более 2 раз подряд).
     val respawnQueue = remember { mutableListOf<PlacedModel>() }
+    // Счётчики за сессию: [0] — постановки пользователем, [1] — пересоздания «невидимок/залипших».
+    val sessionCounters = remember { IntArray(2) }
     val respawnLineage = remember { mutableMapOf<String, Int>() }
     val respawnAction = remember { arrayOfNulls<(PlacedModel) -> Unit>(1) }
     val flushedIds = remember { mutableSetOf<String>() }
@@ -192,7 +204,7 @@ fun FurnitureSceneScreen(
     // (уже удалённый) кружок не получал подталкиваний.
     val ringPush = remember { mutableMapOf<String, Pair<Any, () -> Unit>>() }
     val ringBornMs = remember { mutableMapOf<String, Long>() }
-    val lastNoHitLogMs = remember { LongArray(2) }
+    val lastNoHitLogMs = remember { LongArray(3) }
     val syncFixCount = remember { IntArray(1) }
     val syncLastInfo = remember { arrayOfNulls<String>(1) }
     var healCount by remember { mutableStateOf(0) }
@@ -300,7 +312,7 @@ fun FurnitureSceneScreen(
                         val dy = wp.y - placed.position.y
                         val dz = wp.z - placed.position.z
                         val dist = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                        if (dist > diag + 0.25f && (respawnLineage[placed.instanceId] ?: 0) < 2) {
+                        if (dist > diag + 0.25f && (respawnLineage[placed.instanceId] ?: 0) < 3) {
                             logEvent("LOST dist=%.2f > %.2f -> пересоздаю".format(dist, diag + 0.25f))
                             respawnQueue.add(placed)
                         }
@@ -324,7 +336,8 @@ fun FurnitureSceneScreen(
             val liveText = placedModels.find { it.instanceId == selectedInstanceId }
                 ?.let { nodeLive[it.instanceId]?.invoke(it) } ?: ""
             val joined = synchronized(eventLog) { eventLog.joinToString("\n") }
-            eventLogText = if (liveText.isEmpty()) joined else liveText + "\n" + joined
+            val statsLine = "placed=%d respawned=%d".format(sessionCounters[0], sessionCounters[1])
+            eventLogText = statsLine + (if (liveText.isEmpty()) "" else "\n" + liveText) + "\n" + joined
             if (syncFixCount[0] != shownCount) {
                 shownCount = syncFixCount[0]
                 healCount = shownCount
@@ -595,6 +608,7 @@ fun FurnitureSceneScreen(
                     footprintCache[newInstanceId] = footprint
                     placedAtMs[newInstanceId] = System.currentTimeMillis()
                     placedModels = placedModels + candidate
+                    if (respawn == null) sessionCounters[0] += 1 else sessionCounters[1] += 1
                     if (respawn != null) {
                         respawnLineage[newInstanceId] = (respawnLineage[respawn.instanceId] ?: 0) + 1
                         if (reselect) selectedInstanceId = newInstanceId
@@ -702,27 +716,34 @@ fun FurnitureSceneScreen(
                 ),
             )
         }
+        // Кто мешает ЗАПРОШЕННОМУ положению (подсвечиваем всегда, даже если модель при этом
+        // «проскальзывает» вдоль препятствия): иначе подсказка была бы только при полной блокировке,
+        // то есть «в одну сторону».
+        val targetBlocker = placedModels
+            .filter { it.instanceId != id && it.overlapsWith(current.copy(position = target)) }
+            .minByOrNull {
+                val bx = it.position.x - target.x
+                val by = it.position.y - target.y
+                val bz = it.position.z - target.z
+                bx * bx + by * by + bz * bz
+            }
+        if (targetBlocker != null && blockerHighlightId != targetBlocker.instanceId) {
+            blockerHighlightId = targetBlocker.instanceId
+        }
         val free = options.firstOrNull { !collidesAt(it) }
         if (free == null) {
-            // Подсказка пользователю: кто именно мешает (иначе модель просто «не слушается»).
-            val blocker = placedModels
-                .filter { it.instanceId != id && it.overlapsWith(current.copy(position = target)) }
-                .minByOrNull {
-                    val bx = it.position.x - target.x
-                    val by = it.position.y - target.y
-                    val bz = it.position.z - target.z
-                    bx * bx + by * by + bz * bz
-                }
-            if (blocker != null && blockerHighlightId != blocker.instanceId) {
-                blockerHighlightId = blocker.instanceId
+            // Текстовая подсказка — только при полной блокировке, не чаще раза в 3,5 с.
+            val toastNowMs = System.currentTimeMillis()
+            if (targetBlocker != null && toastNowMs - lastNoHitLogMs[2] > 3_500L) {
+                lastNoHitLogMs[2] = toastNowMs
                 val blockerOnScreen = currentFrame
-                    ?.let { projectToScreen(it.camera, blocker.position, viewportWidthPx, viewportHeightPx) }
+                    ?.let { projectToScreen(it.camera, targetBlocker.position, viewportWidthPx, viewportHeightPx) }
                     ?.let { it.x >= 0f && it.y >= 0f && it.x <= viewportWidthPx && it.y <= viewportHeightPx }
                     ?: false
                 statusMessage = if (blockerOnScreen) {
-                    "Мешает модель «${blocker.modelName}» — она подсвечена красным. Отодвинь её или поверни свою"
+                    "Мешает модель «${targetBlocker.modelName}» — она подсвечена красным. Отодвинь её или поверни свою"
                 } else {
-                    "Мешает модель «${blocker.modelName}», она сейчас вне кадра — отведи камеру, чтобы увидеть её"
+                    "Мешает модель «${targetBlocker.modelName}», она сейчас вне кадра — отведи камеру, чтобы увидеть её"
                 }
             }
             val nowMs = System.currentTimeMillis()
@@ -837,6 +858,7 @@ fun FurnitureSceneScreen(
             // SceneView — другое дольше ~0,2 с. Наклон мал -> сравниваем yaw; иначе (стена, поворот
             // в плоскости стены) сравниваем мировую «верхнюю» ось с cos(наклона).
             val ageMs = System.currentTimeMillis() - (placedAtMs[id] ?: 0L)
+            var healthy = false
             if (settled && ageMs > 300L) {
                 val tiltSmall = kotlin.math.abs(wrap180(tilt)) < 5f
                 var staleNow = false
@@ -861,6 +883,7 @@ fun FurnitureSceneScreen(
                 }
                 // Поворот «от стены»/по полу проверяем по мировой оси Z модели: она не зависит от
                 // наклона. Знак оси допускаем любой (проверяем обе зеркальные ориентации).
+                var yawStale = false
                 val wz = h.modelWorldZ?.invoke()
                 if (wz != null) {
                     val yawRad = Math.toRadians(yaw.toDouble())
@@ -869,11 +892,13 @@ fun FurnitureSceneScreen(
                     val best = maxOf(wz[0] * sy + wz[2] * cy, -wz[0] * sy + wz[2] * cy)
                     if (best < 0.985f) {
                         staleNow = true
+                        yawStale = true
                         staleText += " zAxis yaw=%.0f dot=%.2f".format(yaw, best)
                     }
                 }
                 // Мировая позиция узла «уехала» от состояния дальше, чем допускает размер модели
                 // (по видео 21:46 — на 2,5 м при неподвижной модели) — тоже залипание.
+                var posGarbage = false
                 val wpos = h.modelWorldPos?.invoke()
                 if (wpos != null) {
                     val diag = kotlin.math.sqrt(
@@ -885,9 +910,25 @@ fun FurnitureSceneScreen(
                     val dist = kotlin.math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
                     if (dist > diag + 0.25f) {
                         staleNow = true
+                        posGarbage = true
                         staleText += " pos dist=%.2f".format(dist)
                     }
                 }
+                // Если мировая позиция «уехала» и не возвращается ~1,5 с (по видео 22:46 модель
+                // пропала уже после нормального рождения), пересоздаём модель так же, как при
+                // «плохом рождении» (не более 2 раз подряд).
+                // По видео 23:02 на стене залипание (и позиции, и yaw) длится секундами и не лечится
+                // перезаписью, а новая модель обычно рождается нормально — поэтому пересоздаём уже
+                // через ~1 с (30 кадров) залипания, не только при «уехавшей» позиции.
+                if (posGarbage || yawStale) h.garbageFrames += 1 else h.garbageFrames = 0
+                if (h.garbageFrames >= 30 && (respawnLineage[id] ?: 0) < 3 &&
+                    respawnQueue.none { it.instanceId == id }
+                ) {
+                    h.garbageFrames = 0
+                    logEvent("LOST later %s -> пересоздаю".format(staleText))
+                    respawnQueue.add(placed)
+                }
+                healthy = !staleNow
                 if (staleNow) {
                     h.staleFrames += 1
                     if (h.staleFrames >= 6) {
@@ -908,6 +949,38 @@ fun FurnitureSceneScreen(
                     h.staleFrames = 0
                     h.poked = false
                 }
+            }
+            if (!h.revealed) {
+                if (healthy) h.okFrames += 1 else h.okFrames = 0
+                if (h.okFrames >= 8 || ageMs > 3_500L) {
+                    h.revealed = true
+                    h.modelSetVisible?.invoke(true)
+                    logEvent("REVEAL %s age=%dms ok=%d".format(placed.modelName, ageMs, h.okFrames))
+                }
+            }
+            // Диагностика: мировая трансформация модели изменилась САМА (состояние то же).
+            val jumpPos = h.modelWorldPos?.invoke()
+            val jumpZ = h.modelWorldZ?.invoke()
+            val jumpUp = h.modelWorldUpY?.invoke()
+            val stateKey = placed.position.x + placed.position.y * 3f + placed.position.z * 7f +
+                    placed.rotationYDegrees * 0.01f + placed.tiltDegrees * 0.013f
+            if (jumpPos != null && jumpZ != null && jumpUp != null) {
+                val last = h.lastWorld
+                if (last != null && h.lastStateKey == stateKey) {
+                    val jdx = jumpPos.x - last[0]
+                    val jdy = jumpPos.y - last[1]
+                    val jdz = jumpPos.z - last[2]
+                    val dPos = kotlin.math.sqrt(jdx * jdx + jdy * jdy + jdz * jdz)
+                    val dZ = jumpZ[0] * last[3] + jumpZ[1] * last[4] + jumpZ[2] * last[5]
+                    val dUp = kotlin.math.abs(jumpUp - last[6])
+                    val nowJ = System.currentTimeMillis()
+                    if ((dPos > 0.05f || dZ < 0.98f || dUp > 0.05f) && nowJ - h.lastJumpLogMs > 500L) {
+                        h.lastJumpLogMs = nowJ
+                        logEvent("JUMP dpos=%.2f dz=%.2f dup=%.2f".format(dPos, dZ, dUp))
+                    }
+                }
+                h.lastWorld = floatArrayOf(jumpPos.x, jumpPos.y, jumpPos.z, jumpZ[0], jumpZ[1], jumpZ[2], jumpUp)
+                h.lastStateKey = stateKey
             }
             val worldScale = h.modelWorldScale?.invoke()
             if (settled && worldScale != null && kotlin.math.abs(worldScale - 1f) > 0.05f) {
@@ -1175,9 +1248,10 @@ fun FurnitureSceneScreen(
                                         nodeLive[placed.instanceId] = { st: PlacedModel ->
                                             val wp = modelNode.worldPosition
                                             val wr = modelNode.worldRotation
-                                            "LIVE state(%.2f,%.2f,%.2f y=%.0f) world(%.2f,%.2f,%.2f y=%.0f) sc=%.2f".format(
+                                            "LIVE state(%.2f,%.2f,%.2f y=%.0f) world(%.2f,%.2f,%.2f y=%.0f) sc=%.2f v=%s".format(
                                                 st.position.x, st.position.y, st.position.z, st.rotationYDegrees,
                                                 wp.x, wp.y, wp.z, yawOfEuler(wr.x, wr.y), modelNode.worldScale.x,
+                                                modelNode.isVisible,
                                             )
                                         }
                                         nodeProbes[placed.instanceId] = {
@@ -1245,12 +1319,13 @@ fun FurnitureSceneScreen(
                                             val wr = modelNode.worldRotation
                                             yawOfEuler(wr.x, wr.y)
                                         }
+                                        h.modelSetVisible = { visible: Boolean -> modelNode.isVisible = visible }
                                         h.modelPush = {
                                             modelNode.isVisible = false
-                                            modelNode.isVisible = true
+                                            modelNode.isVisible = h.revealed
                                         }
                                         this.isVisible = false
-                                        this.isVisible = true
+                                        this.isVisible = h.revealed
                                     },
                                 )
                             }

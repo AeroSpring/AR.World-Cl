@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,9 +24,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.CircularProgressIndicator
+import com.aerospring.arworld.core.ui.component.HelpItem
+import com.aerospring.arworld.core.ui.component.SectionHelpDialog
+import com.aerospring.arworld.core.ui.component.SectionHelpPrefs
 import com.aerospring.arworld.feature.whereanythingis.ar.VisibleMarker
 import com.aerospring.arworld.feature.whereanythingis.ui.MarkerInfoCard
 import com.aerospring.arworld.core.data.model.defaultCategories
@@ -39,6 +43,42 @@ import com.aerospring.arworld.core.data.repository.PoiFetchResult
 import com.aerospring.arworld.core.data.repository.RemotePoiRepository
 import com.aerospring.arworld.core.data.geo.GeoMath
 import com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm
+
+/** Ключ раздела для запоминания "справка уже показана". */
+private const val HELP_SECTION_KEY = "where_anything_is"
+
+/** Краткая справка по разделу — содержимое диалога по кнопке "i". */
+private val whereAnythingIsHelpItems = listOf(
+    HelpItem(
+        marker = "🔄",
+        title = "Проведи камерой вокруг",
+        text = "Делай это медленно и плавно — оборот за секунду не нужен. " +
+                "Объекты висят в воздухе в той стороне, где находятся на самом деле."
+    ),
+    HelpItem(
+        marker = "👆",
+        title = "Нажми на объект",
+        text = "Нажми на модель — откроется карточка: маршрут, звонок, сайт. " +
+                "Самое интересное прячется за нажатием!"
+    ),
+    HelpItem(
+        marker = "📏",
+        title = "Радиус поиска",
+        text = "Ползунок задаёт, как далеко искать. Левый бегунок скрывает близкие " +
+                "объекты, правый — далёкие."
+    ),
+    HelpItem(
+        marker = "🎨",
+        title = "Категории",
+        text = "Нажми на категорию, чтобы скрыть или показать её объекты."
+    ),
+    HelpItem(
+        marker = "📍",
+        title = "Луч вниз",
+        text = "Тонкий луч показывает точку на земле под объектом. " +
+                "Далёкий объект выглядит меньше — это нормально."
+    )
+)
 
 /**
  * Экран AR-сервиса "Где что находится".
@@ -73,6 +113,18 @@ fun WhereAnythingIsScreen(
     var selectedCategoryIds by remember { mutableStateOf(defaultCategories.map { it.id }.toSet()) }
     var categoriesExpanded by remember { mutableStateOf(true) }
     var selectedMarker by remember { mutableStateOf<VisibleMarker?>(null) }
+    var showHelp by remember { mutableStateOf(false) }
+
+    // Автопоказ справки при ПЕРВОМ входе в раздел — но только когда разрешения уже выданы и
+    // пользователь видит AR-экран (иначе справка наложилась бы на системный запрос разрешений).
+    // Флаг "показано" ставим сразу в момент показа: справка не повторяется, дальше — только по кнопке "i".
+    val context = LocalContext.current
+    LaunchedEffect(permissionsGranted) {
+        if (permissionsGranted && !SectionHelpPrefs.wasShown(context, HELP_SECTION_KEY)) {
+            showHelp = true
+            SectionHelpPrefs.markShown(context, HELP_SECTION_KEY)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -83,6 +135,14 @@ fun WhereAnythingIsScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Назад"
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showHelp = true }) {
+                        Icon(
+                            imageVector = Icons.Outlined.Info,
+                            contentDescription = "Справка"
                         )
                     }
                 }
@@ -232,5 +292,13 @@ fun WhereAnythingIsScreen(
                 }
             }
         }
+    }
+
+    if (showHelp) {
+        SectionHelpDialog(
+            title = "Как пользоваться",
+            items = whereAnythingIsHelpItems,
+            onDismiss = { showHelp = false }
+        )
     }
 }

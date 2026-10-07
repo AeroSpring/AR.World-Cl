@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +40,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.aerospring.arworld.core.ui.component.HelpItem
+import com.aerospring.arworld.core.ui.component.SectionHelpDialog
+import com.aerospring.arworld.core.ui.component.SectionHelpPrefs
 import com.aerospring.arworld.feature.arbc.ar.ArBcSceneView
 import com.aerospring.arworld.feature.arbc.data.ArBcAiAction
 import com.aerospring.arworld.feature.arbc.data.ArBcAiChatResult
@@ -52,6 +56,35 @@ import com.aerospring.arworld.feature.arbc.permissions.REQUIRED_ARBC_PERMISSIONS
 import com.aerospring.arworld.feature.arbc.permissions.rememberArbcPermissionsGranted
 import kotlinx.coroutines.launch
 import java.util.Locale
+
+/** Ключ для запоминания "справка по экрану визитки уже показана". */
+private const val HELP_SECTION_KEY = "arbc_scene"
+
+/** Краткая справка по экрану визитки — содержимое диалога по кнопке "i". */
+private val arBcHelpItems = listOf(
+    HelpItem(
+        marker = "⏳",
+        title = "Подожди загрузку",
+        text = "Модели появятся перед тобой. Пока они загружаются, на их месте виден процент."
+    ),
+    HelpItem(
+        marker = "👆",
+        title = "Нажми на модель",
+        text = "Модель можно нажать: она может открыть сайт компании или начать разговор " +
+                "с ИИ-помощником. Самое интересное прячется за нажатием!"
+    ),
+    HelpItem(
+        marker = "🤖",
+        title = "ИИ-помощник",
+        text = "Спроси голосом (значок микрофона) или напиши текстом. " +
+                "Он может открыть сайт, набрать номер или написать письмо."
+    ),
+    HelpItem(
+        marker = "📲",
+        title = "Другая визитка",
+        text = "Вернись назад и отсканируй другой QR-код — или выбери визитку на витрине."
+    )
+)
 
 /**
  * Экран одной AR.Визитки. clientId приходит от ArBcQrScanScreen (см. ArBcEntryPoint) —
@@ -76,6 +109,19 @@ fun ArBcScreen(
         permissionsGranted = result.values.all { it }
     }
 
+    var showHelp by remember { mutableStateOf(false) }
+
+    // Автопоказ справки при ПЕРВОМ открытии визитки — когда разрешения уже выданы (иначе справка
+    // наложилась бы на системный запрос камеры). Флаг ставим сразу в момент показа: справка не
+    // повторяется, дальше — только по кнопке "i".
+    val helpContext = LocalContext.current
+    LaunchedEffect(permissionsGranted) {
+        if (permissionsGranted && !SectionHelpPrefs.wasShown(helpContext, HELP_SECTION_KEY)) {
+            showHelp = true
+            SectionHelpPrefs.markShown(helpContext, HELP_SECTION_KEY)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -85,6 +131,14 @@ fun ArBcScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Назад"
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showHelp = true }) {
+                        Icon(
+                            imageVector = Icons.Outlined.Info,
+                            contentDescription = "Справка"
                         )
                     }
                 }
@@ -331,6 +385,14 @@ fun ArBcScreen(
                 }
             }
         }
+    }
+
+    if (showHelp) {
+        SectionHelpDialog(
+            title = "Как пользоваться",
+            items = arBcHelpItems,
+            onDismiss = { showHelp = false }
+        )
     }
 }
 

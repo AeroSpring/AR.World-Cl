@@ -37,7 +37,7 @@ private sealed class ScreenState {
     object UpToDate : ScreenState()
     data class Available(val apkUrl: String, val versionName: String, val notes: String?) : ScreenState()
     data class CheckError(val message: String) : ScreenState()
-    data class Downloading(val percent: Int) : ScreenState()
+    data class Downloading(val percent: Int, val hint: String? = null) : ScreenState()
     data class DownloadError(val message: String) : ScreenState()
 }
 
@@ -109,7 +109,7 @@ fun AboutScreen(
                             scope.launch {
                                 ApkDownloader.download(context, s.apkUrl).collect { downloadState ->
                                     when (downloadState) {
-                                        is ApkDownloadState.Progress -> state = ScreenState.Downloading(downloadState.percent)
+                                        is ApkDownloadState.Progress -> state = ScreenState.Downloading(downloadState.percent, downloadState.hint)
                                         is ApkDownloadState.Done -> installApk(context, downloadState.uri)
                                         is ApkDownloadState.Error -> state = ScreenState.DownloadError(downloadState.message)
                                     }
@@ -127,6 +127,7 @@ fun AboutScreen(
                                 .padding(horizontal = 32.dp)
                         )
                         Text("Загрузка ${s.percent}%")
+                        s.hint?.let { Text(it) }
                     }
                     is ScreenState.DownloadError -> Text("Ошибка загрузки: ${s.message}")
                 }

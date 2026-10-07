@@ -9,7 +9,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
 sealed class ApkDownloadState {
-    data class Progress(val percent: Int) : ApkDownloadState()
+    /** hint — пояснение для пользователя, если загрузка ещё не идёт (очередь, ожидание сети, повтор). */
+    data class Progress(val percent: Int, val hint: String? = null) : ApkDownloadState()
     data class Done(val uri: Uri) : ApkDownloadState()
     data class Error(val message: String) : ApkDownloadState()
 }
@@ -57,11 +58,27 @@ object ApkDownloader {
                             return@flow
                         }
                         else -> {
+                            val status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                            val reason = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
                             val downloaded = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
                             val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-                            if (total > 0) {
-                                emit(ApkDownloadState.Progress(((downloaded * 100) / total).toInt().coerceIn(0, 100)))
+                            val percent = if (total > 0) {
+                                ((downloaded * 100) / total).toInt().coerceIn(0, 100)
+                            } else {
+                                0
                             }
+                            val hint = when (status) {
+                                DownloadManager.STATUS_PENDING -> "В очереди на загрузку…"
+                                DownloadManager.STATUS_PAUSED -> when (reason) {
+                                    DownloadManager.PAUSED_WAITING_TO_RETRY -> "Связь с сервером прервалась, система повторит попытку…"
+                                    DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "Ожидание сети…"
+                                    DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "Ожидание Wi-Fi…"
+                                    else -> "Загрузка приостановлена системой…"
+                                }
+                                DownloadManager.STATUS_RUNNING -> if (total <= 0) "Подключение к серверу…" else null
+                                else -> null
+                            }
+                            emit(ApkDownloadState.Progress(percent, hint))
                         }
                     }
                 }
