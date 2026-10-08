@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.GridOff
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,6 +41,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.aerospring.arworld.core.data.network.ArWorldServerConfig
+import com.aerospring.arworld.core.ui.component.HelpItem
+import com.aerospring.arworld.core.ui.component.SectionHelpDialog
+import com.aerospring.arworld.core.ui.component.SectionHelpPrefs
 import com.aerospring.arworld.feature.furniture.data.FurnitureModel
 import com.aerospring.arworld.feature.furniture.model.FurnitureDownloadState
 import com.aerospring.arworld.feature.furniture.model.FurnitureGlbDownloader
@@ -95,14 +99,69 @@ private const val TAP_TOLERANCE_DP = 70f
  */
 private const val FURNITURE_DEBUG_DEFAULT = false
 
+/** Ключ для запоминания «справка по AR-сцене мебели уже показана». */
+private const val HELP_SECTION_KEY = "ar_furniture_scene"
+
+/** Краткая справка для дизайнера — содержимое окна по кнопке «i». */
+private val furnitureHelpItems = listOf(
+    HelpItem(
+        marker = "🔄",
+        title = "Осмотри комнату",
+        text = "Медленно поводи камерой по полу и стенам. Счётчик «Пол / Стены» справа вверху " +
+                "показывает, сколько поверхностей найдено. Сетка рисуется только на полу — " +
+                "готовность стены видна по счётчику «Стены»."
+    ),
+    HelpItem(
+        marker = "🪑",
+        title = "Поставь модель",
+        text = "Наведи центр экрана на пол или стену и нажми миниатюру внизу. " +
+                "Пока модель загружается, остальные миниатюры недоступны."
+    ),
+    HelpItem(
+        marker = "👆",
+        title = "Двигай и поворачивай",
+        text = "Нажми на модель — под ней появится голубой круг. Тяни одним пальцем — " +
+                "переместить, двумя пальцами — повернуть. Выбор снимается нажатием на пустое место."
+    ),
+    HelpItem(
+        marker = "🗑️",
+        title = "Удалить",
+        text = "Долгое нажатие на модель открывает кнопку «Удалить»."
+    ),
+    HelpItem(
+        marker = "🚫",
+        title = "Модели не пересекаются",
+        text = "Если модель упирается в другую, мешающая подсвечивается красным. " +
+                "Отодвинь её или поверни свою."
+    ),
+    HelpItem(
+        marker = "📏",
+        title = "Проверка масштаба",
+        text = "Значок линейки: наведи перекрестие на начало и конец известного размера " +
+                "(плитка, дверной проём, рулетка), введи реальный размер. " +
+                "Отклонение до ±2% — модели показаны в реальном размере."
+    ),
+    HelpItem(
+        marker = "⚠️",
+        title = "Жёлтая плашка",
+        text = "Камере мало ориентиров (однотонные пол и стены) — масштаб может быть неточным. " +
+                "Поводи камерой, захватывая углы, плинтусы, двери, предметы."
+    ),
+    HelpItem(
+        marker = "▦",
+        title = "Сетка",
+        text = "Кнопка сетки вверху скрывает её — так клиенту видна чистая картинка."
+    )
+)
+
 /**
  * Порог «слабого трекинга» по числу точек-ориентиров ARCore в кадре (облако точек, сглаженное).
  * Однотонные пол и стены дают мало точек — тогда ARCore хуже держит масштаб и положение.
  * Значения — первое приближение: в режиме диагностики число точек видно рядом со счётчиком
  * «Пол/Стены», по видео их можно подстроить. Гистерезис (ON < OFF), чтобы плашка не мигала.
  */
-private const val WEAK_TRACKING_POINTS_ON = 30f
-private const val WEAK_TRACKING_POINTS_OFF = 45f
+private const val WEAK_TRACKING_POINTS_ON = 20f
+private const val WEAK_TRACKING_POINTS_OFF = 30f
 
 /** Состояние наблюдения за качеством отслеживания (обновляется в onSessionUpdated). */
 private class TrackingMonitor {
@@ -205,6 +264,16 @@ fun FurnitureSceneScreen(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val modelLoadDispatcher = remember { Dispatchers.IO.limitedParallelism(3) }
+
+    // Справка «i»: автопоказ один раз при первом входе на AR-сцену, дальше — только по кнопке.
+    // Флаг «показано» ставим сразу в момент показа (как в других разделах).
+    var showHelp by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!SectionHelpPrefs.wasShown(context, HELP_SECTION_KEY)) {
+            showHelp = true
+            SectionHelpPrefs.markShown(context, HELP_SECTION_KEY)
+        }
+    }
 
     var pendingModel by remember { mutableStateOf<FurnitureModel?>(null) }
     var loadingModelId by remember { mutableStateOf<String?>(null) }
@@ -1693,16 +1762,24 @@ fun FurnitureSceneScreen(
                     tint = if (measureMode) Color(0xFF00E676) else Color.White,
                 )
             }
+            // Справка «i» — в том же стиле, что и остальные кнопки: белая иконка прямо на камере.
+            IconButton(onClick = { showHelp = true }) {
+                Icon(Icons.Outlined.Info, contentDescription = "Справка", tint = Color.White)
+            }
         }
 
         TrackingBanner(
             text = { trackingHint },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 68.dp, start = 16.dp, end = 16.dp)
+                .padding(top = 100.dp, start = 16.dp, end = 16.dp)
                 .widthIn(max = 420.dp),
         )
 
+        // Счётчик «Пол / Стены» — под рядом кнопок, слева (ряд кнопок может расти вправо).
+        // Ряд кнопок: отступ 16 dp + высота IconButton 48 dp = 64 dp, поэтому счётчик начинается
+        // с 64 dp и по касаниям с кнопками больше не пересекается. Начало текста выровнено по
+        // левому краю иконки «Назад» (16 + 12 + 12 = 28 dp от края экрана).
         Text(
             if (debugOn && trackingPointsShown >= 0) {
                 "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount  Точки: $trackingPointsShown"
@@ -1711,14 +1788,15 @@ fun FurnitureSceneScreen(
             },
             color = Color.White,
             modifier = Modifier
-                .align(Alignment.TopEnd)
+                .align(Alignment.TopStart)
+                .padding(top = 64.dp, start = 16.dp)
                 .pointerInput(Unit) {
                     detectTapGestures(onLongPress = {
                         debugOn = !debugOn
                         statusMessage = if (debugOn) "Режим диагностики включён" else "Режим диагностики выключен"
                     })
                 }
-                .padding(16.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
         )
 
         if (debugOn) {
@@ -1726,14 +1804,14 @@ fun FurnitureSceneScreen(
                 debugLine,
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 40.dp, start = 190.dp, end = 16.dp),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 100.dp, start = 190.dp, end = 16.dp),
             )
 
             Text(
                 healLine,
                 color = Color.Yellow,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, start = 100.dp, end = 16.dp),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 152.dp, start = 100.dp, end = 16.dp),
             )
         }
 
@@ -1744,7 +1822,7 @@ fun FurnitureSceneScreen(
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(top = 96.dp, start = 8.dp)
+                    .padding(top = 128.dp, start = 8.dp)
                     .widthIn(max = 230.dp)
                     .background(Color.Black.copy(alpha = 0.35f)),
             )
@@ -1879,6 +1957,14 @@ fun FurnitureSceneScreen(
                 )
             }
         }
+    }
+
+    if (showHelp) {
+        SectionHelpDialog(
+            title = "Как пользоваться",
+            items = furnitureHelpItems,
+            onDismiss = { showHelp = false }
+        )
     }
 }
 
