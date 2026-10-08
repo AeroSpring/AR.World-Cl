@@ -4,11 +4,13 @@ import android.view.MotionEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 //import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -69,6 +71,20 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 
 private const val TAP_TOLERANCE_DP = 70f
+
+/**
+ * Начальное значение режима диагностики раздела «AR.Мебель» (при каждом входе в раздел).
+ * Во время работы включается/выключается долгим нажатием на счётчик «Пол/Стены».
+ *
+ * false (для пользователей): не рисуется ни один диагностический текст (белая и жёлтая строки,
+ * голубой журнал событий), не считаются «живые» значения узлов, fps, детектор скачков JUMP и
+ * журнал; расчёты и записи строк в журнал выключены полностью.
+ * true (для отладки и тестов): всё это включено — можно снимать экран и видео, как раньше.
+ *
+ * Рабочая логика (пересоздание «невидимок», показ модели после проверки, лечение залипания узлов,
+ * красная подсветка «кто мешает», счётчик плоскостей «Пол/Стены») от флага НЕ зависит.
+ */
+private const val FURNITURE_DEBUG_DEFAULT = false
 
 private data class LoadedModel(val instance: ModelInstance, val bounds: GlbBounds?)
 
@@ -160,6 +176,7 @@ fun FurnitureSceneScreen(
     var currentFrame by remember { mutableStateOf<Frame?>(null) }
     var currentSession by remember { mutableStateOf<Session?>(null) }
     var placedModels by remember { mutableStateOf<List<PlacedModel>>(emptyList()) }
+    var debugOn by remember { mutableStateOf(FURNITURE_DEBUG_DEFAULT) }
     var selectedInstanceId by remember { mutableStateOf<String?>(null) }
     // Модель, которая мешает перетаскиваемой: подсвечивается красным кружком ~3 с.
     var blockerHighlightId by remember { mutableStateOf<String?>(null) }
@@ -210,8 +227,8 @@ fun FurnitureSceneScreen(
     var healCount by remember { mutableStateOf(0) }
     var healLine by remember { mutableStateOf("") }
     var debugLine by remember { mutableStateOf("") }
-    // ВРЕМЕННАЯ диагностика: журнал событий (касания, перемещения, повороты, исправления
-    // синхронизатора) с метками времени — виден на видео экрана. Убрать перед релизом.
+    // Диагностика (только при debugOn): журнал событий (касания, перемещения, повороты,
+    // исправления синхронизатора) с метками времени — виден на видео экрана.
     val eventLog = remember { ArrayDeque<String>() }
     val eventLogDirty = remember { BooleanArray(1) }
     val rotLogCount = remember { IntArray(1) }
@@ -219,6 +236,7 @@ fun FurnitureSceneScreen(
     val lastFixLogMs = remember { LongArray(1) }
     var eventLogText by remember { mutableStateOf("") }
     fun logEvent(text: String) {
+        if (!debugOn) return
         val t = System.currentTimeMillis() % 100_000L
         synchronized(eventLog) {
             eventLog.addLast("%02d.%03d %s".format(t / 1000, t % 1000, text))
@@ -298,12 +316,14 @@ fun FurnitureSceneScreen(
                 } else if (flushedIds.add(placed.instanceId)) {
                     // Окно подталкивания закончилось — один раз переписываем все узлы набело.
                     h.forceNext = true
-                    val birth = h.modelBirthInfo?.invoke() ?: "нет узла"
-                    logEvent(
-                        "BIRTH state(%.2f,%.2f,%.2f) %s".format(
-                            placed.position.x, placed.position.y, placed.position.z, birth,
-                        ),
-                    )
+                    if (debugOn) {
+                        val birth = h.modelBirthInfo?.invoke() ?: "нет узла"
+                        logEvent(
+                            "BIRTH state(%.2f,%.2f,%.2f) %s".format(
+                                placed.position.x, placed.position.y, placed.position.z, birth,
+                            ),
+                        )
+                    }
                     val fp = footprintCache[placed.instanceId]
                     val wp = h.modelWorldPos?.invoke()
                     if (fp != null && wp != null) {
@@ -332,16 +352,18 @@ fun FurnitureSceneScreen(
                 val lost = respawnQueue.removeAt(0)
                 respawnAction[0]?.invoke(lost)
             }
-            eventLogDirty[0] = false
-            val liveText = placedModels.find { it.instanceId == selectedInstanceId }
-                ?.let { nodeLive[it.instanceId]?.invoke(it) } ?: ""
-            val joined = synchronized(eventLog) { eventLog.joinToString("\n") }
-            val statsLine = "placed=%d respawned=%d".format(sessionCounters[0], sessionCounters[1])
-            eventLogText = statsLine + (if (liveText.isEmpty()) "" else "\n" + liveText) + "\n" + joined
-            if (syncFixCount[0] != shownCount) {
-                shownCount = syncFixCount[0]
-                healCount = shownCount
-                healLine = syncLastInfo[0] ?: ""
+            if (debugOn) {
+                eventLogDirty[0] = false
+                val liveText = placedModels.find { it.instanceId == selectedInstanceId }
+                    ?.let { nodeLive[it.instanceId]?.invoke(it) } ?: ""
+                val joined = synchronized(eventLog) { eventLog.joinToString("\n") }
+                val statsLine = "placed=%d respawned=%d".format(sessionCounters[0], sessionCounters[1])
+                eventLogText = statsLine + (if (liveText.isEmpty()) "" else "\n" + liveText) + "\n" + joined
+                if (syncFixCount[0] != shownCount) {
+                    shownCount = syncFixCount[0]
+                    healCount = shownCount
+                    healLine = syncLastInfo[0] ?: ""
+                }
             }
         }
     }
@@ -440,6 +462,7 @@ fun FurnitureSceneScreen(
     }
 
     fun logNoHit(tag: String) {
+        if (!debugOn) return
         val now = System.currentTimeMillis()
         if (now - lastNoHitLogMs[0] > 700L) {
             lastNoHitLogMs[0] = now
@@ -615,13 +638,15 @@ fun FurnitureSceneScreen(
                         logEvent("RESPAWN %s".format(respawn.modelName))
                     }
                     val statePos = candidate.position
-                    scope.launch {
-                        delay(1500)
-                        val probe = nodeProbes[newInstanceId]?.invoke() ?: "узла нет"
-                        debugLine = "%s fps=%d\nstate=%.2f,%.2f,%.2f\nnode %s".format(
-                            candidate.surfaceType.name, smoothFps[0].toInt(),
-                            statePos.x, statePos.y, statePos.z, probe,
-                        )
+                    if (debugOn) {
+                        scope.launch {
+                            delay(1500)
+                            val probe = nodeProbes[newInstanceId]?.invoke() ?: "узла нет"
+                            debugLine = "%s fps=%d\nstate=%.2f,%.2f,%.2f\nnode %s".format(
+                                candidate.surfaceType.name, smoothFps[0].toInt(),
+                                statePos.x, statePos.y, statePos.z, probe,
+                            )
+                        }
                     }
                     statusMessage = null
                     // Держим блокировку, пока модель не "осела" в сцене (~100 мс).
@@ -747,7 +772,7 @@ fun FurnitureSceneScreen(
                 }
             }
             val nowMs = System.currentTimeMillis()
-            if (nowMs - lastNoHitLogMs[1] > 700L) {
+            if (debugOn && nowMs - lastNoHitLogMs[1] > 700L) {
                 lastNoHitLogMs[1] = nowMs
                 val blockers = placedModels
                     .filter { it.instanceId != id && it.overlapsWith(current.copy(position = target)) }
@@ -758,7 +783,7 @@ fun FurnitureSceneScreen(
         }
         if (free.x == from.x && free.y == from.y && free.z == from.z) return
         placedModels = placedModels.map { if (it.instanceId == id) it.copy(position = free) else it }
-        if (moveLogCount[0]++ % 8 == 0) {
+        if (debugOn && moveLogCount[0]++ % 8 == 0) {
             logEvent("MOVE %.2f,%.2f,%.2f->%.2f,%.2f,%.2f".format(from.x, from.y, from.z, free.x, free.y, free.z))
         }
     }
@@ -767,7 +792,7 @@ fun FurnitureSceneScreen(
      *  Для WALL крутим tiltDegrees — наклон вокруг нормали стены (как картина). */
     fun rotateSelectedModel(deltaDegrees: Float) {
         val id = selectedInstanceId ?: return
-        if (rotLogCount[0]++ % 8 == 0) {
+        if (debugOn && rotLogCount[0]++ % 8 == 0) {
             val cur = placedModels.find { it.instanceId == id }
             logEvent("ROT d=%.1f yaw=%.0f tilt=%.0f".format(deltaDegrees, cur?.rotationYDegrees ?: 0f, cur?.tiltDegrees ?: 0f))
         }
@@ -850,9 +875,15 @@ fun FurnitureSceneScreen(
             val tilt = if (settled) placed.tiltDegrees else 0f
             var info: String? = null
             val forcedThisFrame = h.forceNext
-            h.outerSync?.invoke(placed.position, yaw)?.let { info = (info ?: "") + it + " "; syncFixCount[0] += 1 }
-            h.midSync?.invoke(tilt)?.let { info = (info ?: "") + it + " "; syncFixCount[0] += 1 }
-            h.modelSync?.invoke(footprint.modelOffset)?.let { info = (info ?: "") + it + " "; syncFixCount[0] += 1 }
+            h.outerSync?.invoke(placed.position, yaw)?.let {
+                if (debugOn) { info = (info ?: "") + it + " "; syncFixCount[0] += 1 }
+            }
+            h.midSync?.invoke(tilt)?.let {
+                if (debugOn) { info = (info ?: "") + it + " "; syncFixCount[0] += 1 }
+            }
+            h.modelSync?.invoke(footprint.modelOffset)?.let {
+                if (debugOn) { info = (info ?: "") + it + " "; syncFixCount[0] += 1 }
+            }
             if (forcedThisFrame) h.forceNext = false
             // Обнаружение «залипшего» узла: состояние говорит одно, а мировой поворот модели по данным
             // SceneView — другое дольше ~0,2 с. Наклон мал -> сравниваем yaw; иначе (стена, поворот
@@ -958,29 +989,31 @@ fun FurnitureSceneScreen(
                     logEvent("REVEAL %s age=%dms ok=%d".format(placed.modelName, ageMs, h.okFrames))
                 }
             }
-            // Диагностика: мировая трансформация модели изменилась САМА (состояние то же).
-            val jumpPos = h.modelWorldPos?.invoke()
-            val jumpZ = h.modelWorldZ?.invoke()
-            val jumpUp = h.modelWorldUpY?.invoke()
-            val stateKey = placed.position.x + placed.position.y * 3f + placed.position.z * 7f +
-                    placed.rotationYDegrees * 0.01f + placed.tiltDegrees * 0.013f
-            if (jumpPos != null && jumpZ != null && jumpUp != null) {
-                val last = h.lastWorld
-                if (last != null && h.lastStateKey == stateKey) {
-                    val jdx = jumpPos.x - last[0]
-                    val jdy = jumpPos.y - last[1]
-                    val jdz = jumpPos.z - last[2]
-                    val dPos = kotlin.math.sqrt(jdx * jdx + jdy * jdy + jdz * jdz)
-                    val dZ = jumpZ[0] * last[3] + jumpZ[1] * last[4] + jumpZ[2] * last[5]
-                    val dUp = kotlin.math.abs(jumpUp - last[6])
-                    val nowJ = System.currentTimeMillis()
-                    if ((dPos > 0.05f || dZ < 0.98f || dUp > 0.05f) && nowJ - h.lastJumpLogMs > 500L) {
-                        h.lastJumpLogMs = nowJ
-                        logEvent("JUMP dpos=%.2f dz=%.2f dup=%.2f".format(dPos, dZ, dUp))
+            // Диагностика (только debugOn): мировая трансформация модели изменилась САМА (состояние то же).
+            if (debugOn) {
+                val jumpPos = h.modelWorldPos?.invoke()
+                val jumpZ = h.modelWorldZ?.invoke()
+                val jumpUp = h.modelWorldUpY?.invoke()
+                val stateKey = placed.position.x + placed.position.y * 3f + placed.position.z * 7f +
+                        placed.rotationYDegrees * 0.01f + placed.tiltDegrees * 0.013f
+                if (jumpPos != null && jumpZ != null && jumpUp != null) {
+                    val last = h.lastWorld
+                    if (last != null && h.lastStateKey == stateKey) {
+                        val jdx = jumpPos.x - last[0]
+                        val jdy = jumpPos.y - last[1]
+                        val jdz = jumpPos.z - last[2]
+                        val dPos = kotlin.math.sqrt(jdx * jdx + jdy * jdy + jdz * jdz)
+                        val dZ = jumpZ[0] * last[3] + jumpZ[1] * last[4] + jumpZ[2] * last[5]
+                        val dUp = kotlin.math.abs(jumpUp - last[6])
+                        val nowJ = System.currentTimeMillis()
+                        if ((dPos > 0.05f || dZ < 0.98f || dUp > 0.05f) && nowJ - h.lastJumpLogMs > 500L) {
+                            h.lastJumpLogMs = nowJ
+                            logEvent("JUMP dpos=%.2f dz=%.2f dup=%.2f".format(dPos, dZ, dUp))
+                        }
                     }
+                    h.lastWorld = floatArrayOf(jumpPos.x, jumpPos.y, jumpPos.z, jumpZ[0], jumpZ[1], jumpZ[2], jumpUp)
+                    h.lastStateKey = stateKey
                 }
-                h.lastWorld = floatArrayOf(jumpPos.x, jumpPos.y, jumpPos.z, jumpZ[0], jumpZ[1], jumpZ[2], jumpUp)
-                h.lastStateKey = stateKey
             }
             val worldScale = h.modelWorldScale?.invoke()
             if (settled && worldScale != null && kotlin.math.abs(worldScale - 1f) > 0.05f) {
@@ -994,7 +1027,7 @@ fun FurnitureSceneScreen(
                 h.scaleFrames = 0
                 h.scalePoked = false
             }
-            if (info != null) {
+            if (debugOn && info != null) {
                 syncLastInfo[0] = "fix#%d %s: %s".format(syncFixCount[0], placed.modelName, info)
                 val nowMs = System.currentTimeMillis()
                 if (nowMs - lastFixLogMs[0] > 150L) {
@@ -1021,12 +1054,14 @@ fun FurnitureSceneScreen(
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
             },
             onSessionUpdated = { session: Session, frame: Frame ->
-                val ts = frame.timestamp
-                if (lastFrameTs[0] != 0L) {
-                    val dt = (ts - lastFrameTs[0]) / 1_000_000_000f
-                    if (dt > 0f) smoothFps[0] = smoothFps[0] * 0.9f + (1f / dt) * 0.1f
+                if (debugOn) {
+                    val ts = frame.timestamp
+                    if (lastFrameTs[0] != 0L) {
+                        val dt = (ts - lastFrameTs[0]) / 1_000_000_000f
+                        if (dt > 0f) smoothFps[0] = smoothFps[0] * 0.9f + (1f / dt) * 0.1f
+                    }
+                    lastFrameTs[0] = ts
                 }
-                lastFrameTs[0] = ts
                 syncNodes()
                 currentSession = session
                 currentFrame = frame
@@ -1162,7 +1197,11 @@ fun FurnitureSceneScreen(
                                             kotlin.math.abs(sc.y - 1f) > 0.02f ||
                                             kotlin.math.abs(sc.z - 1f) > 0.02f
                                     if (bad) {
-                                        val before = "O(%.2f,%.2f,%.2f ry=%.0f>%.2f,%.2f,%.2f ry=%.0f)".format(p.x, p.y, p.z, curYaw, pos.x, pos.y, pos.z, yaw)
+                                        val before = if (debugOn) {
+                                            "O(%.2f,%.2f,%.2f ry=%.0f>%.2f,%.2f,%.2f ry=%.0f)".format(p.x, p.y, p.z, curYaw, pos.x, pos.y, pos.z, yaw)
+                                        } else {
+                                            "x"
+                                        }
                                         if (h.forceNext) {
                                             // Запись того же значения, что уже в кэше узла, до Filament не
                                             // доходит (видно по видео: залипший yaw лечится только записью
@@ -1212,7 +1251,7 @@ fun FurnitureSceneScreen(
                                                 kotlin.math.abs(sc.y - 1f) > 0.02f ||
                                                 kotlin.math.abs(sc.z - 1f) > 0.02f
                                         if (bad) {
-                                            val before = "T(rz=%.0f>%.0f)".format(r.z, tilt)
+                                            val before = if (debugOn) "T(rz=%.0f>%.0f)".format(r.z, tilt) else "x"
                                             if (h.forceNext) {
                                                 node.transform = Transform(
                                                     position = Position(0.001f, 0f, 0f),
@@ -1274,7 +1313,7 @@ fun FurnitureSceneScreen(
                                                     kotlin.math.abs(sc.y - 1f) > 0.02f ||
                                                     kotlin.math.abs(sc.z - 1f) > 0.02f
                                             if (bad) {
-                                                val before = "M(%.2f,%.2f,%.2f)".format(p.x, p.y, p.z)
+                                                val before = if (debugOn) "M(%.2f,%.2f,%.2f)".format(p.x, p.y, p.z) else "x"
                                                 if (h.forceNext) {
                                                     modelNode.transform = Transform(
                                                         position = Position(offset.x + 0.001f, offset.y, offset.z),
@@ -1446,24 +1485,34 @@ fun FurnitureSceneScreen(
         Text(
             "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount",
             color = Color.White,
-            modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .pointerInput(Unit) {
+                    detectTapGestures(onLongPress = {
+                        debugOn = !debugOn
+                        statusMessage = if (debugOn) "Режим диагностики включён" else "Режим диагностики выключен"
+                    })
+                }
+                .padding(16.dp),
         )
 
-        Text(
-            debugLine,
-            color = Color.White,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 40.dp, start = 190.dp, end = 16.dp),
-        )
+        if (debugOn) {
+            Text(
+                debugLine,
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 40.dp, start = 190.dp, end = 16.dp),
+            )
 
-        Text(
-            healLine,
-            color = Color.Yellow,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, start = 100.dp, end = 16.dp),
-        )
+            Text(
+                healLine,
+                color = Color.Yellow,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, start = 100.dp, end = 16.dp),
+            )
+        }
 
-        if (eventLogText.isNotEmpty()) {
+        if (debugOn && eventLogText.isNotEmpty()) {
             Text(
                 eventLogText,
                 color = Color.Cyan,
