@@ -12,8 +12,8 @@ android {
         applicationId = "com.aerospring.arworld"
         minSdk = 26 // ARCore требует минимум 24, берём 26 с запасом под современные API
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.1.10"
+        versionCode = 12
+        versionName = "0.1.11"
     }
 
     buildTypes {

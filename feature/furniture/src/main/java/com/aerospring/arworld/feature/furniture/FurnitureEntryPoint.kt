@@ -5,6 +5,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.aerospring.arworld.feature.furniture.data.FurnitureAuthRepository
 import com.aerospring.arworld.feature.furniture.data.FurnitureTokenStore
 import com.aerospring.arworld.feature.furniture.ui.FurnitureCatalogScreen
+import com.aerospring.arworld.feature.furniture.ui.FurnitureGuestScreen
 import com.aerospring.arworld.feature.furniture.ui.FurnitureLoginScreen
 import kotlinx.coroutines.launch
 
@@ -22,18 +23,27 @@ fun FurnitureEntryPoint(onExit: () -> Unit) {
         )
     }
 
+    // Гостевой режим (витрина без входа). Только когда дизайнер не залогинен.
+    var guestMode by remember { mutableStateOf(false) }
+
     fun clearSession() {
         tokenStore.clear()
         session = null
     }
 
     val current = session
-    if (current == null) {
+    if (current == null && guestMode) {
+        FurnitureGuestScreen(
+            onLoginClick = { guestMode = false },
+            onBackClick = onExit,
+        )
+    } else if (current == null) {
         FurnitureLoginScreen(
             onLoggedIn = { token, displayName ->
                 tokenStore.saveToken(token, displayName)
                 session = displayName to token
-            }
+            },
+            onGuestClick = { guestMode = true },
         )
     } else {
         val (displayName, token) = current

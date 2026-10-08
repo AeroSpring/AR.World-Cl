@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Chair
 import androidx.compose.material.icons.filled.Close
@@ -45,6 +46,8 @@ import com.aerospring.arworld.core.ui.component.HelpItem
 import com.aerospring.arworld.core.ui.component.SectionHelpDialog
 import com.aerospring.arworld.core.ui.component.SectionHelpPrefs
 import com.aerospring.arworld.feature.furniture.data.FurnitureModel
+import com.aerospring.arworld.feature.furniture.data.FurnitureShowcase
+import com.aerospring.arworld.feature.furniture.ui.FurnitureContactDialog
 import com.aerospring.arworld.feature.furniture.model.FurnitureDownloadState
 import com.aerospring.arworld.feature.furniture.model.FurnitureGlbDownloader
 import com.aerospring.arworld.feature.furniture.model.GlbBounds
@@ -107,7 +110,7 @@ private val furnitureHelpItems = listOf(
     HelpItem(
         marker = "🔄",
         title = "Осмотри комнату",
-        text = "Медленно поводи камерой по полу и стенам. Счётчик «Пол / Стены» справа вверху " +
+        text = "Медленно поводи камерой по полу и стенам. Счётчик «Пол / Стены» слева вверху " +
                 "показывает, сколько поверхностей найдено. Сетка рисуется только на полу — " +
                 "готовность стены видна по счётчику «Стены»."
     ),
@@ -151,6 +154,59 @@ private val furnitureHelpItems = listOf(
         marker = "▦",
         title = "Сетка",
         text = "Кнопка сетки вверху скрывает её — так клиенту видна чистая картинка."
+    )
+)
+
+/** Ключ «справка для гостя уже показана» — отдельный от дизайнерского. */
+private const val GUEST_HELP_SECTION_KEY = "ar_furniture_scene_guest"
+
+/** Справка для гостя (вход без авторизации, витрина). */
+private val furnitureGuestHelpItems = listOf(
+    HelpItem(
+        marker = "🛋️",
+        title = "Что это",
+        text = "Мебель реальных мебельных компаний — прямо в вашей комнате, в натуральную величину. " +
+                "Расставьте её, посмотрите со всех сторон и закажите понравившуюся."
+    ),
+    HelpItem(
+        marker = "🔄",
+        title = "Осмотрите комнату",
+        text = "Медленно поводите камерой по полу и стенам. Счётчик «Пол / Стены» слева вверху " +
+                "показывает, сколько поверхностей найдено."
+    ),
+    HelpItem(
+        marker = "🏷️",
+        title = "Выберите тип мебели",
+        text = "Кнопки над миниатюрами — кухни, шкафы, столы и так далее. «Все» показывает всё."
+    ),
+    HelpItem(
+        marker = "🪑",
+        title = "Поставьте модель",
+        text = "Наведите центр экрана на пол или стену и нажмите миниатюру внизу. " +
+                "Большие модели загружаются дольше — дождитесь окончания."
+    ),
+    HelpItem(
+        marker = "👆",
+        title = "Двигайте и поворачивайте",
+        text = "Нажмите на модель — под ней появится голубой круг. Тяните одним пальцем — переместить, " +
+                "двумя пальцами — повернуть. Долгое нажатие — удалить. Модели не заходят друг в друга."
+    ),
+    HelpItem(
+        marker = "💬",
+        title = "Хочу такую",
+        text = "Выберите модель и нажмите «Хочу такую» — откроются контакты компании и код модели. " +
+                "Позвоните или напишите сами и назовите код. Приложение ваших данных не собирает."
+    ),
+    HelpItem(
+        marker = "⚠️",
+        title = "Жёлтая плашка",
+        text = "Камере мало ориентиров (однотонные пол и стены) — размер может быть неточным. " +
+                "Поводите камерой, захватывая углы, двери, предметы."
+    ),
+    HelpItem(
+        marker = "🔑",
+        title = "Вы дизайнер?",
+        text = "Значок входа вверху ведёт на вход в кабинет дизайнера."
     )
 )
 
@@ -255,8 +311,27 @@ fun FurnitureSceneScreen(
     models: List<FurnitureModel>,
     onLogoutClick: () -> Unit,
     onBackClick: () -> Unit,
+    // Гостевой режим (витрина). null — режим дизайнера, всё работает ровно как раньше.
+    // В гостевом: кнопка «Выйти» становится «Вход для дизайнеров» (onLogoutClick),
+    // чипы типов над каруселью, «Хочу такую» в плашке выбора, своя справка.
+    guestShowcase: FurnitureShowcase? = null,
 ) {
     val context = LocalContext.current
+    val isGuest = guestShowcase != null
+    val helpKey = if (isGuest) GUEST_HELP_SECTION_KEY else HELP_SECTION_KEY
+    val helpItems = if (isGuest) furnitureGuestHelpItems else furnitureHelpItems
+    // Гость: выбранный тип мебели (null — «Все») и код модели для окна «Хочу такую».
+    var guestTypeFilter by remember { mutableStateOf<String?>(null) }
+    var contactCode by remember { mutableStateOf<String?>(null) }
+    val carouselModels = remember(models, guestShowcase, guestTypeFilter) {
+        val filter = guestTypeFilter
+        if (guestShowcase == null || filter == null) models
+        else models.filter { guestShowcase.modelByCode(it.modelId)?.furnitureType == filter }
+    }
+    // В гостевом режиме над каруселью ряд чипов — плашки снизу поднимаем выше него.
+    val chipTypes = guestShowcase?.types.orEmpty()
+    val showTypeChips = chipTypes.size > 1
+    val bottomPillPadding = if (showTypeChips) 168.dp else 120.dp
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
@@ -269,9 +344,9 @@ fun FurnitureSceneScreen(
     // Флаг «показано» ставим сразу в момент показа (как в других разделах).
     var showHelp by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        if (!SectionHelpPrefs.wasShown(context, HELP_SECTION_KEY)) {
+        if (!SectionHelpPrefs.wasShown(context, helpKey)) {
             showHelp = true
-            SectionHelpPrefs.markShown(context, HELP_SECTION_KEY)
+            SectionHelpPrefs.markShown(context, helpKey)
         }
     }
 
@@ -1736,7 +1811,11 @@ fun FurnitureSceneScreen(
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = Color.White)
             }
             IconButton(onClick = onLogoutClick) {
-                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти", tint = Color.White)
+                if (isGuest) {
+                    Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Вход для дизайнеров", tint = Color.White)
+                } else {
+                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти", tint = Color.White)
+                }
             }
             IconButton(onClick = { showGrid = !showGrid }) {
                 Icon(
@@ -1833,7 +1912,7 @@ fun FurnitureSceneScreen(
             Snackbar(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 120.dp, start = 16.dp, end = 16.dp),
+                    .padding(bottom = bottomPillPadding, start = 16.dp, end = 16.dp),
             ) {
                 Text(currentStatusMessage)
             }
@@ -1891,7 +1970,7 @@ fun FurnitureSceneScreen(
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 120.dp, start = 16.dp, end = 16.dp),
+                    .padding(bottom = bottomPillPadding, start = 16.dp, end = 16.dp),
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                 contentColor = MaterialTheme.colorScheme.onSurface,
@@ -1911,7 +1990,10 @@ fun FurnitureSceneScreen(
             }
         }
 
-        val selectedModelName = placedModels.find { it.instanceId == selectedInstanceId }?.modelName
+        val selectedPlaced = placedModels.find { it.instanceId == selectedInstanceId }
+        val selectedModelName = selectedPlaced?.modelName
+        // Гость: модель витрины для выбранной (modelId поставленной модели = код витрины).
+        val selectedShowcaseModel = selectedPlaced?.let { guestShowcase?.modelByCode(it.modelId) }
         if (selectedModelName != null &&
             !measureMode &&
             loadingId == null &&
@@ -1921,7 +2003,7 @@ fun FurnitureSceneScreen(
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 120.dp, start = 16.dp, end = 16.dp),
+                    .padding(bottom = bottomPillPadding, start = 16.dp, end = 16.dp),
                 shape = RoundedCornerShape(24.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                 contentColor = MaterialTheme.colorScheme.onSurface,
@@ -1936,7 +2018,33 @@ fun FurnitureSceneScreen(
                         "Тяни пальцем — переместить · двумя пальцами — повернуть · долгое нажатие — удалить",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (selectedShowcaseModel != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Button(onClick = { contactCode = selectedShowcaseModel.code }) {
+                            Text("Хочу такую · ${selectedShowcaseModel.code}")
+                        }
+                    }
                 }
+            }
+        }
+
+        // Гость: чипы типов мебели над каруселью (только непустые типы — их отдаёт сервер).
+        if (!measureMode && showTypeChips) LazyRow(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 116.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                GuestTypeChip(text = "Все", selected = guestTypeFilter == null, onClick = { guestTypeFilter = null })
+            }
+            items(chipTypes) { type ->
+                GuestTypeChip(
+                    text = type.name,
+                    selected = guestTypeFilter == type.id,
+                    onClick = { guestTypeFilter = type.id },
+                )
             }
         }
 
@@ -1944,7 +2052,7 @@ fun FurnitureSceneScreen(
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(models) { model ->
+            items(carouselModels) { model ->
                 ModelThumbnail(
                     model = model,
                     isSelected = model.modelId == pendingModel?.modelId,
@@ -1962,10 +2070,36 @@ fun FurnitureSceneScreen(
     if (showHelp) {
         SectionHelpDialog(
             title = "Как пользоваться",
-            items = furnitureHelpItems,
+            items = helpItems,
             onDismiss = { showHelp = false }
         )
     }
+
+    val contactModel = contactCode?.let { guestShowcase?.modelByCode(it) }
+    if (guestShowcase != null && contactModel != null) {
+        FurnitureContactDialog(
+            model = contactModel,
+            company = guestShowcase.company(contactModel.companyId),
+            typeName = guestShowcase.typeName(contactModel.furnitureType),
+            onDismiss = { contactCode = null },
+        )
+    }
+}
+
+/** Чип типа мебели для гостя: полупрозрачный поверх камеры, выбранный — цветом темы. */
+@Composable
+private fun GuestTypeChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(text) },
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+            labelColor = MaterialTheme.colorScheme.onSurface,
+            selectedContainerColor = MaterialTheme.colorScheme.primary,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+        ),
+    )
 }
 
 @Composable

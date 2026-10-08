@@ -14,7 +14,11 @@ import com.aerospring.arworld.feature.furniture.data.FurnitureLoginResult
 import kotlinx.coroutines.launch
 
 @Composable
-fun FurnitureLoginScreen(onLoggedIn: (token: String, displayName: String) -> Unit) {
+fun FurnitureLoginScreen(
+    onLoggedIn: (token: String, displayName: String) -> Unit,
+    // Гостевой вход (витрина). null — кнопки нет.
+    onGuestClick: (() -> Unit)? = null,
+) {
     var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
@@ -77,7 +81,27 @@ fun FurnitureLoginScreen(onLoggedIn: (token: String, displayName: String) -> Uni
                 if (isLoading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("Войти")
+                    Text("Войти как дизайнер")
+                }
+            }
+
+            if (onGuestClick != null) {
+                Spacer(Modifier.height(28.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "Расставьте мебель мебельных компаний у себя в комнате в натуральную величину " +
+                            "и закажите понравившуюся. Без регистрации.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(12.dp))
+                // Такая же заметная, как кнопка входа: гостей будет больше, чем дизайнеров.
+                Button(
+                    onClick = onGuestClick,
+                    enabled = !isLoading,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Примерить мебель в своей комнате")
                 }
             }
         }
