@@ -1,6 +1,7 @@
 package com.aerospring.arworld.feature.furniture.ar
 
 import android.view.MotionEvent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,14 +11,18 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Chair
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.GridOff
+import androidx.compose.material.icons.filled.Straighten
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,10 +31,12 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.aerospring.arworld.core.data.network.ArWorldServerConfig
@@ -41,7 +48,9 @@ import com.aerospring.arworld.feature.furniture.model.GlbBoundsReader
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
+import com.google.ar.core.Point
 import com.google.ar.core.Session
+import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.math.Position
@@ -85,6 +94,33 @@ private const val TAP_TOLERANCE_DP = 70f
  * красная подсветка «кто мешает», счётчик плоскостей «Пол/Стены») от флага НЕ зависит.
  */
 private const val FURNITURE_DEBUG_DEFAULT = false
+
+/**
+ * Порог «слабого трекинга» по числу точек-ориентиров ARCore в кадре (облако точек, сглаженное).
+ * Однотонные пол и стены дают мало точек — тогда ARCore хуже держит масштаб и положение.
+ * Значения — первое приближение: в режиме диагностики число точек видно рядом со счётчиком
+ * «Пол/Стены», по видео их можно подстроить. Гистерезис (ON < OFF), чтобы плашка не мигала.
+ */
+private const val WEAK_TRACKING_POINTS_ON = 30f
+private const val WEAK_TRACKING_POINTS_OFF = 45f
+
+/** Состояние наблюдения за качеством отслеживания (обновляется в onSessionUpdated). */
+private class TrackingMonitor {
+    var frames = 0
+    var smoothPoints = -1f
+    var lowSinceMs = 0L
+    var highSinceMs = 0L
+    var weak = false
+    var everTracked = false
+    var lastLostMs = 0L
+}
+
+private fun distanceBetween(a: Position, b: Position): Float {
+    val dx = a.x - b.x
+    val dy = a.y - b.y
+    val dz = a.z - b.z
+    return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+}
 
 private data class LoadedModel(val instance: ModelInstance, val bounds: GlbBounds?)
 
@@ -197,6 +233,20 @@ fun FurnitureSceneScreen(
     var horizontalPlaneCount by remember { mutableStateOf(0) }
     var verticalPlaneCount by remember { mutableStateOf(0) }
     var settledInstanceIds by remember { mutableStateOf(setOf<String>()) }
+
+    // Предупреждение о слабом трекинге: текст плашки (null — всё хорошо).
+    val trackingMonitor = remember { TrackingMonitor() }
+    var trackingHint by remember { mutableStateOf<String?>(null) }
+    var trackingPointsShown by remember { mutableStateOf(-1) }
+
+    // Проверка масштаба («рулетка»): две точки по перекрестию в центре экрана + реальный размер.
+    // В этом режиме жесты над моделями отключены, карусель скрыта; выделение модели НЕ сбрасывается.
+    var measureMode by remember { mutableStateOf(false) }
+    var measurePointA by remember { mutableStateOf<Position?>(null) }
+    var measurePointB by remember { mutableStateOf<Position?>(null) }
+    var measureLive by remember { mutableStateOf<Position?>(null) }
+    var measureRealCmText by remember { mutableStateOf("") }
+    var measureVerdict by remember { mutableStateOf<String?>(null) }
 
     val instanceCache = remember { mutableMapOf<String, ModelInstance>() }
     val footprintCache = remember { mutableMapOf<String, ModelFootprint>() }
@@ -468,6 +518,145 @@ fun FurnitureSceneScreen(
             lastNoHitLogMs[0] = now
             logEvent("NOHIT %s %s".format(tag, describePlanes()))
         }
+    }
+
+    /**
+     * Оценка качества отслеживания на каждом кадре. Только читает данные ARCore и меняет текст
+     * плашки (Compose-состояние пишется лишь при изменении текста). Сцену и модели не трогает.
+     */
+    fun updateTrackingHint(frame: Frame) {
+        val m = trackingMonitor
+        val now = System.currentTimeMillis()
+        val camera = frame.camera
+        val text: String?
+        if (camera.trackingState != TrackingState.TRACKING) {
+            if (m.everTracked) m.lastLostMs = now
+            m.lowSinceMs = 0L
+            m.highSinceMs = 0L
+            text = when (camera.trackingFailureReason) {
+                TrackingFailureReason.INSUFFICIENT_FEATURES ->
+                    "Камере не за что зацепиться: однотонные пол и стены. Наведи на угол, плинтус, дверь или предмет"
+                TrackingFailureReason.EXCESSIVE_MOTION ->
+                    "Слишком быстро — веди камеру медленнее"
+                TrackingFailureReason.INSUFFICIENT_LIGHT ->
+                    "Слишком темно — включи свет"
+                TrackingFailureReason.BAD_STATE, TrackingFailureReason.CAMERA_UNAVAILABLE ->
+                    "Отслеживание сбилось — подожди пару секунд, не закрывая камеру"
+                else -> if (m.everTracked) {
+                    "Отслеживание потеряно — медленно поводи камерой"
+                } else {
+                    "Медленно поводи камерой по полу и стенам, чтобы приложение «увидело» комнату"
+                }
+            }
+        } else {
+            m.everTracked = true
+            m.frames += 1
+            // Облако точек — раз в 10 кадров (~3 раза в секунду), обязательно освобождаем.
+            if (m.frames % 10 == 0) {
+                val count = try {
+                    val cloud = frame.acquirePointCloud()
+                    try {
+                        cloud.points.remaining() / 4
+                    } finally {
+                        cloud.release()
+                    }
+                } catch (e: Exception) {
+                    -1
+                }
+                if (count >= 0) {
+                    m.smoothPoints = if (m.smoothPoints < 0f) count.toFloat() else m.smoothPoints * 0.7f + count * 0.3f
+                    if (debugOn) trackingPointsShown = m.smoothPoints.toInt()
+                }
+            }
+            if (m.smoothPoints >= 0f) {
+                when {
+                    m.smoothPoints < WEAK_TRACKING_POINTS_ON -> {
+                        if (m.lowSinceMs == 0L) m.lowSinceMs = now
+                        m.highSinceMs = 0L
+                    }
+                    m.smoothPoints > WEAK_TRACKING_POINTS_OFF -> {
+                        if (m.highSinceMs == 0L) m.highSinceMs = now
+                        m.lowSinceMs = 0L
+                    }
+                    else -> {
+                        m.lowSinceMs = 0L
+                        m.highSinceMs = 0L
+                    }
+                }
+                if (!m.weak && m.lowSinceMs != 0L && now - m.lowSinceMs > 2_000L) m.weak = true
+                if (m.weak && m.highSinceMs != 0L && now - m.highSinceMs > 1_500L) m.weak = false
+            }
+            val recentlyLost = m.lastLostMs != 0L && now - m.lastLostMs < 4_000L
+            text = when {
+                m.weak ->
+                    "Масштаб может быть неточным: мало ориентиров. Медленно поводи камерой, захватывая углы, плинтусы, двери, предметы"
+                recentlyLost ->
+                    "Отслеживание восстановилось — масштаб может быть неточным, поводи камерой по комнате"
+                else -> null
+            }
+        }
+        if (trackingHint != text) trackingHint = text
+    }
+
+    /** Точка для «рулетки»: ближайшее попадание в плоскость (внутри её контура) или в точку-ориентир
+     *  с оценённой нормалью. Нужна, чтобы мерить и на полу, и по дверному проёму. */
+    fun measureHitAt(xPx: Float, yPx: Float): Position? {
+        val frame = currentFrame ?: return null
+        if (frame.camera.trackingState != TrackingState.TRACKING) return null
+        for (result in frame.hitTest(xPx, yPx)) {
+            val trackable = result.trackable
+            val ok = (trackable is Plane && trackable.isPoseInPolygon(result.hitPose)) ||
+                    (trackable is Point && trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
+            if (ok) {
+                val pose = result.hitPose
+                return Position(pose.tx(), pose.ty(), pose.tz())
+            }
+        }
+        return null
+    }
+
+    fun resetMeasurement() {
+        measurePointA = null
+        measurePointB = null
+        measureLive = null
+        measureVerdict = null
+    }
+
+    fun setMeasurePoint() {
+        val hit = measureLive ?: measureHitAt(viewportWidthPx / 2f, viewportHeightPx / 2f)
+        // Без попадания кнопка в панели неактивна, а панель сама подсказывает, куда навести.
+        if (hit == null) return
+        if (measurePointA == null) {
+            measurePointA = hit
+        } else if (measurePointB == null) {
+            measurePointB = hit
+            measureVerdict = null
+        }
+    }
+
+    fun checkMeasurement() {
+        val a = measurePointA ?: return
+        val b = measurePointB ?: return
+        val realCm = measureRealCmText.trim().replace(',', '.').toFloatOrNull()
+        if (realCm == null || realCm < 10f || realCm > 1000f) {
+            measureVerdict = "Введи реальный размер в сантиметрах (от 10 до 1000)"
+            return
+        }
+        val measuredCm = distanceBetween(a, b) * 100f
+        val deviation = (measuredCm - realCm) / realCm * 100f
+        val absDev = kotlin.math.abs(deviation)
+        val shortNote = if (realCm < 50f) "\nОтрезок короткий — точнее мерить от 1 м." else ""
+        measureVerdict = when {
+            absDev <= 2f ->
+                "Отклонение %+.1f%% — масштаб точный, модели показаны в реальном размере.".format(deviation)
+            absDev <= 15f ->
+                "Отклонение %+.1f%% — масштаб неточный: модели выглядят примерно на %.0f%% %s реального. Поводи камерой по комнате и перемерь.".format(
+                    deviation, absDev, if (deviation > 0f) "меньше" else "больше",
+                )
+            else ->
+                "Отклонение %+.1f%% — слишком большое. Скорее всего точка поставлена мимо или камера потеряла ориентиры. Перемерь.".format(deviation)
+        } + shortNote
+        logEvent("MEASURE %.1f real %.1f dev %+.1f%%".format(measuredCm, realCm, deviation))
     }
 
     data class SurfaceHit(val position: Position, val wallYawDegrees: Float?, val surfaceType: SurfaceType)
@@ -1072,8 +1261,15 @@ fun FurnitureSceneScreen(
                 verticalPlaneCount = planes.count {
                     it.type == Plane.Type.VERTICAL && it.trackingState == TrackingState.TRACKING
                 }
+                updateTrackingHint(frame)
+                if (measureMode && measurePointB == null && viewportWidthPx > 0 && viewportHeightPx > 0) {
+                    val live = measureHitAt(viewportWidthPx / 2f, viewportHeightPx / 2f)
+                    if (live != measureLive) measureLive = live
+                }
             },
-            onTouchEvent = { event: MotionEvent, _ ->
+            onTouchEvent = touch@{ event: MotionEvent, _ ->
+                // В режиме «рулетки» касания сцены ничего не делают (точки ставятся кнопкой).
+                if (measureMode) return@touch true
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         touchDownPosition = Offset(event.x, event.y)
@@ -1480,10 +1676,39 @@ fun FurnitureSceneScreen(
                     tint = Color.White,
                 )
             }
+            IconButton(enabled = measureMode || loadingModelId == null, onClick = {
+                if (measureMode) {
+                    measureMode = false
+                    resetMeasurement()
+                } else {
+                    resetMeasurement()
+                    measureRealCmText = ""
+                    deleteMenuInstanceId = null
+                    measureMode = true
+                }
+            }) {
+                Icon(
+                    Icons.Default.Straighten,
+                    contentDescription = if (measureMode) "Закрыть проверку масштаба" else "Проверить масштаб",
+                    tint = if (measureMode) Color(0xFF00E676) else Color.White,
+                )
+            }
         }
 
+        TrackingBanner(
+            text = { trackingHint },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 68.dp, start = 16.dp, end = 16.dp)
+                .widthIn(max = 420.dp),
+        )
+
         Text(
-            "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount",
+            if (debugOn && trackingPointsShown >= 0) {
+                "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount  Точки: $trackingPointsShown"
+            } else {
+                "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount"
+            },
             color = Color.White,
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -1536,7 +1761,39 @@ fun FurnitureSceneScreen(
             }
         }
 
-        val menuId = deleteMenuInstanceId
+        if (measureMode) {
+            MeasureReticleLayer(
+                frame = { currentFrame },
+                pointA = { measurePointA },
+                pointB = { measurePointB },
+                live = { measureLive },
+            )
+            MeasurePanel(
+                pointA = { measurePointA },
+                pointB = { measurePointB },
+                live = { measureLive },
+                realCmText = measureRealCmText,
+                onRealCmTextChange = {
+                    measureRealCmText = it
+                    measureVerdict = null
+                },
+                verdict = measureVerdict,
+                onSetPoint = { setMeasurePoint() },
+                onCheck = { checkMeasurement() },
+                onReset = { resetMeasurement() },
+                onClose = {
+                    measureMode = false
+                    resetMeasurement()
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    .padding(16.dp)
+                    .widthIn(max = 480.dp),
+            )
+        }
+
+        val menuId = if (measureMode) null else deleteMenuInstanceId
         if (menuId != null) {
             Box(modifier = Modifier.align(Alignment.Center).padding(16.dp)) {
                 Button(
@@ -1578,6 +1835,7 @@ fun FurnitureSceneScreen(
 
         val selectedModelName = placedModels.find { it.instanceId == selectedInstanceId }?.modelName
         if (selectedModelName != null &&
+            !measureMode &&
             loadingId == null &&
             currentStatusMessage == null &&
             deleteMenuInstanceId == null
@@ -1604,7 +1862,7 @@ fun FurnitureSceneScreen(
             }
         }
 
-        LazyRow(
+        if (!measureMode) LazyRow(
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -1674,5 +1932,161 @@ private fun ModelThumbnail(
         }
         Spacer(Modifier.height(4.dp))
         Text(model.modelName, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+    }
+}
+
+/** Плашка предупреждения о трекинге. Не перехватывает касания (нет pointerInput) — под ней
+ *  сцена работает как обычно. Текст читается здесь, а не в родителе, чтобы смена текста
+ *  перерисовывала только плашку. */
+@Composable
+private fun TrackingBanner(text: () -> String?, modifier: Modifier) {
+    val current = text() ?: return
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xF2FFC107))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFF3E2723), modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(current, color = Color(0xFF212121), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private val MeasureGreen = Color(0xFF00E676)
+
+/** Перекрестие в центре экрана и отрезок между точками «рулетки». Рисуется поверх камеры
+ *  (в сцену SceneView ничего не добавляется). Кадр читается в фазе рисования — каждый кадр
+ *  перерисовывается только этот слой. Касания не перехватывает. */
+@Composable
+private fun MeasureReticleLayer(
+    frame: () -> Frame?,
+    pointA: () -> Position?,
+    pointB: () -> Position?,
+    live: () -> Position?,
+) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val w = size.width.toInt()
+        val h = size.height.toInt()
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val liveHit = live()
+        val fixedB = pointB()
+        val reticleColor = if (liveHit != null || fixedB != null) MeasureGreen else Color.White
+        val arm = 22.dp.toPx()
+        val gap = 6.dp.toPx()
+        val stroke = 2.dp.toPx()
+        drawCircle(Color.Black.copy(alpha = 0.35f), radius = 15.dp.toPx(), center = center, style = Stroke(4.dp.toPx()))
+        drawCircle(reticleColor, radius = 15.dp.toPx(), center = center, style = Stroke(stroke))
+        drawLine(reticleColor, center - Offset(arm, 0f), center - Offset(gap, 0f), stroke)
+        drawLine(reticleColor, center + Offset(gap, 0f), center + Offset(arm, 0f), stroke)
+        drawLine(reticleColor, center - Offset(0f, arm), center - Offset(0f, gap), stroke)
+        drawLine(reticleColor, center + Offset(0f, gap), center + Offset(0f, arm), stroke)
+
+        val camera = frame()?.camera ?: return@Canvas
+        val a = pointA()?.let { projectToScreen(camera, it, w, h) }
+        val b = (fixedB ?: liveHit)?.let { projectToScreen(camera, it, w, h) }
+        if (a != null && b != null) {
+            drawLine(Color.Black.copy(alpha = 0.4f), a, b, 6.dp.toPx())
+            drawLine(MeasureGreen, a, b, 3.dp.toPx())
+        }
+        for (p in listOfNotNull(a, if (fixedB != null) b else null)) {
+            drawCircle(Color.White, radius = 7.dp.toPx(), center = p)
+            drawCircle(MeasureGreen, radius = 5.dp.toPx(), center = p)
+        }
+    }
+}
+
+/** Нижняя панель «рулетки»: шаги, живое расстояние, ввод реального размера и вывод. */
+@Composable
+private fun MeasurePanel(
+    pointA: () -> Position?,
+    pointB: () -> Position?,
+    live: () -> Position?,
+    realCmText: String,
+    onRealCmTextChange: (String) -> Unit,
+    verdict: String?,
+    onSetPoint: () -> Unit,
+    onCheck: () -> Unit,
+    onReset: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier,
+) {
+    val a = pointA()
+    val b = pointB()
+    val liveHit = live()
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = 4.dp,
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Проверка масштаба", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                }
+            }
+            when {
+                a == null -> {
+                    Text(
+                        "Шаг 1. Наведи перекрестие на начало известного размера (край плитки, косяк проёма, " +
+                                "отметка рулетки на полу) и нажми «Точка 1». Точнее всего — на полу, от 1 м.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                b == null -> {
+                    val liveText = liveHit?.let { "≈ %.1f см".format(distanceBetween(a, it) * 100f) } ?: "—"
+                    Text(
+                        "Шаг 2. Наведи перекрестие на конец размера и нажми «Точка 2».",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(liveText, style = MaterialTheme.typography.titleMedium)
+                }
+                else -> {
+                    Text(
+                        "Намерено: %.1f см".format(distanceBetween(a, b) * 100f),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = realCmText,
+                            onValueChange = { text -> onRealCmTextChange(text.filter { it.isDigit() || it == ',' || it == '.' }.take(6)) },
+                            label = { Text("Реальный размер, см") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = onCheck, enabled = realCmText.isNotBlank()) { Text("Проверить") }
+                    }
+                    if (verdict != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(verdict, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            if (b == null && liveHit == null) {
+                Text(
+                    "Перекрестие ни на что не попадает — наведи на пол или стену и медленно поводи камерой",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (b == null) {
+                    Button(onClick = onSetPoint, enabled = liveHit != null) {
+                        Text(if (a == null) "Точка 1" else "Точка 2")
+                    }
+                }
+                if (a != null) {
+                    OutlinedButton(onClick = onReset) { Text("Заново") }
+                }
+            }
+        }
     }
 }
