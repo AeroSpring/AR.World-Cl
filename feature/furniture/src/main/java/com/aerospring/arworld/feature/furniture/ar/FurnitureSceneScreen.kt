@@ -51,6 +51,7 @@ import com.aerospring.arworld.core.ui.component.SectionHelpDialog
 import com.aerospring.arworld.core.ui.component.SectionHelpPrefs
 import com.aerospring.arworld.feature.furniture.data.FurnitureModel
 import com.aerospring.arworld.feature.furniture.data.FurnitureShowcase
+import com.aerospring.arworld.feature.furniture.data.FurnitureShowcaseStatsRepository
 import com.aerospring.arworld.feature.furniture.ui.FurnitureContactDialog
 import com.aerospring.arworld.feature.furniture.model.FurnitureDownloadState
 import com.aerospring.arworld.feature.furniture.model.FurnitureGlbDownloader
@@ -378,6 +379,13 @@ fun FurnitureSceneScreen(
     // Гость: выбранный тип мебели (null — «Все») и код модели для окна «Хочу такую».
     var guestTypeFilter by remember { mutableStateOf<String?>(null) }
     var contactCode by remember { mutableStateOf<String?>(null) }
+    // Гость: анонимная статистика витрины. Каждое событие по каждой модели — один раз
+    // за заход в сцену (новый заход — новый набор). У дизайнера и руководителя не вызывается.
+    val reportedShowcaseEvents = remember { mutableSetOf<String>() }
+    fun reportShowcaseEvent(code: String, event: String) {
+        if (!isGuest) return
+        if (reportedShowcaseEvents.add("$event:$code")) FurnitureShowcaseStatsRepository.report(code, event)
+    }
     // Руководитель: модели всех его дизайнеров приходят с designerId/designerName.
     // У дизайнера и гостя этих полей нет — чипов дизайнеров нет, фильтр всегда null.
     var designerFilter by remember { mutableStateOf<String?>(null) }
@@ -1105,6 +1113,8 @@ fun FurnitureSceneScreen(
                     placedAtMs[newInstanceId] = System.currentTimeMillis()
                     placedModels = placedModels + candidate
                     if (respawn == null) sessionCounters[0] += 1 else sessionCounters[1] += 1
+                    // Статистика: только настоящая постановка гостем (не служебное пересоздание узла).
+                    if (respawn == null) reportShowcaseEvent(candidate.modelId, FurnitureShowcaseStatsRepository.EVENT_PLACED)
                     if (respawn != null) {
                         respawnLineage[newInstanceId] = (respawnLineage[respawn.instanceId] ?: 0) + 1
                         if (reselect) selectedInstanceId = newInstanceId
@@ -2261,7 +2271,10 @@ fun FurnitureSceneScreen(
                     )
                     if (selectedShowcaseModel != null) {
                         Spacer(Modifier.height(6.dp))
-                        Button(onClick = { contactCode = selectedShowcaseModel.code }) {
+                        Button(onClick = {
+                            contactCode = selectedShowcaseModel.code
+                            reportShowcaseEvent(selectedShowcaseModel.code, FurnitureShowcaseStatsRepository.EVENT_CONTACT)
+                        }) {
                             Text("Хочу такую · ${selectedShowcaseModel.code}")
                         }
                     }
