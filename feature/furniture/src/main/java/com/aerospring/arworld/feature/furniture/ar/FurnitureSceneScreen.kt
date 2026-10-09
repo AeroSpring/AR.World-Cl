@@ -205,8 +205,8 @@ private val furnitureGuestHelpItems = listOf(
     ),
     HelpItem(
         marker = "🔑",
-        title = "Вы дизайнер?",
-        text = "Значок входа вверху ведёт на вход в кабинет дизайнера."
+        title = "Вы дизайнер или руководитель?",
+        text = "Значок входа вверху ведёт на вход для дизайнеров и руководителей мебельных компаний."
     )
 )
 
@@ -312,7 +312,7 @@ fun FurnitureSceneScreen(
     onLogoutClick: () -> Unit,
     onBackClick: () -> Unit,
     // Гостевой режим (витрина). null — режим дизайнера, всё работает ровно как раньше.
-    // В гостевом: кнопка «Выйти» становится «Вход для дизайнеров» (onLogoutClick),
+    // В гостевом: кнопка «Выйти» становится «Вход для дизайнеров и руководителей» (onLogoutClick),
     // чипы типов над каруселью, «Хочу такую» в плашке выбора, своя справка.
     guestShowcase: FurnitureShowcase? = null,
 ) {
@@ -323,15 +323,30 @@ fun FurnitureSceneScreen(
     // Гость: выбранный тип мебели (null — «Все») и код модели для окна «Хочу такую».
     var guestTypeFilter by remember { mutableStateOf<String?>(null) }
     var contactCode by remember { mutableStateOf<String?>(null) }
-    val carouselModels = remember(models, guestShowcase, guestTypeFilter) {
-        val filter = guestTypeFilter
-        if (guestShowcase == null || filter == null) models
-        else models.filter { guestShowcase.modelByCode(it.modelId)?.furnitureType == filter }
+    // Руководитель: модели всех его дизайнеров приходят с designerId/designerName.
+    // У дизайнера и гостя этих полей нет — чипов дизайнеров нет, фильтр всегда null.
+    var designerFilter by remember { mutableStateOf<String?>(null) }
+    val designerChips = remember(models, isGuest) {
+        if (isGuest) emptyList()
+        else models
+            .mapNotNull { m ->
+                m.designerId?.let { id -> id to (m.designerName?.takeIf { it.isNotBlank() } ?: "Без имени") }
+            }
+            .distinctBy { it.first }
+            .sortedBy { it.second.lowercase() }
     }
-    // В гостевом режиме над каруселью ряд чипов — плашки снизу поднимаем выше него.
+    val showDesignerChips = designerChips.size > 1
+    val carouselModels = remember(models, guestShowcase, guestTypeFilter, designerFilter) {
+        val filter = guestTypeFilter
+        val byType = if (guestShowcase == null || filter == null) models
+        else models.filter { guestShowcase.modelByCode(it.modelId)?.furnitureType == filter }
+        val designer = designerFilter
+        if (designer == null) byType else byType.filter { it.designerId == designer }
+    }
+    // Над каруселью ряд чипов (гость — типы, руководитель — дизайнеры): плашки снизу поднимаем выше него.
     val chipTypes = guestShowcase?.types.orEmpty()
     val showTypeChips = chipTypes.size > 1
-    val bottomPillPadding = if (showTypeChips) 168.dp else 120.dp
+    val bottomPillPadding = if (showTypeChips || showDesignerChips) 168.dp else 120.dp
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
@@ -1812,7 +1827,7 @@ fun FurnitureSceneScreen(
             }
             IconButton(onClick = onLogoutClick) {
                 if (isGuest) {
-                    Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Вход для дизайнеров", tint = Color.White)
+                    Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Вход для дизайнеров и руководителей", tint = Color.White)
                 } else {
                     Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Выйти", tint = Color.White)
                 }
@@ -1992,6 +2007,10 @@ fun FurnitureSceneScreen(
 
         val selectedPlaced = placedModels.find { it.instanceId == selectedInstanceId }
         val selectedModelName = selectedPlaced?.modelName
+        // Руководитель: чья модель (у дизайнера и гостя designerName нет — строка прежняя).
+        val selectedDesignerName = selectedPlaced
+            ?.let { placed -> models.find { it.modelId == placed.modelId }?.designerName }
+            ?.takeIf { it.isNotBlank() }
         // Гость: модель витрины для выбранной (modelId поставленной модели = код витрины).
         val selectedShowcaseModel = selectedPlaced?.let { guestShowcase?.modelByCode(it.modelId) }
         if (selectedModelName != null &&
@@ -2013,7 +2032,10 @@ fun FurnitureSceneScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("Выбрано: «$selectedModelName»")
+                    Text(
+                        if (selectedDesignerName != null) "Выбрано: «$selectedModelName» · $selectedDesignerName"
+                        else "Выбрано: «$selectedModelName»"
+                    )
                     Text(
                         "Тяни пальцем — переместить · двумя пальцами — повернуть · долгое нажатие — удалить",
                         style = MaterialTheme.typography.bodySmall,
@@ -2044,6 +2066,26 @@ fun FurnitureSceneScreen(
                     text = type.name,
                     selected = guestTypeFilter == type.id,
                     onClick = { guestTypeFilter = type.id },
+                )
+            }
+        }
+
+        // Руководитель: чипы дизайнеров над каруселью (только если дизайнеров с моделями больше одного).
+        if (!measureMode && showDesignerChips) LazyRow(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 116.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item {
+                GuestTypeChip(text = "Все", selected = designerFilter == null, onClick = { designerFilter = null })
+            }
+            items(designerChips) { (designerId, designerName) ->
+                GuestTypeChip(
+                    text = designerName,
+                    selected = designerFilter == designerId,
+                    onClick = { designerFilter = designerId },
                 )
             }
         }
@@ -2086,7 +2128,7 @@ fun FurnitureSceneScreen(
     }
 }
 
-/** Чип типа мебели для гостя: полупрозрачный поверх камеры, выбранный — цветом темы. */
+/** Чип над каруселью (типы мебели у гостя, дизайнеры у руководителя): полупрозрачный поверх камеры, выбранный — цветом темы. */
 @Composable
 private fun GuestTypeChip(text: String, selected: Boolean, onClick: () -> Unit) {
     FilterChip(

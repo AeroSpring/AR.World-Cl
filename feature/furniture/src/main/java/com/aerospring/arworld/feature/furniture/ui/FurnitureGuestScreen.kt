@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Гостевой вход в AR.Мебель: тянет публичную витрину и открывает ту же AR-сцену,
- * что у дизайнера, в гостевом режиме. Устроен так же, как FurnitureCatalogScreen
+ * что у дизайнера и руководителя, в гостевом режиме. Устроен так же, как FurnitureCatalogScreen
  * (сначала данные, потом сцена под RequireCameraPermission).
  */
 @Composable
@@ -112,7 +112,7 @@ private fun GuestStatus(
                 }
             }
             Spacer(Modifier.height(24.dp))
-            TextButton(onClick = onLoginClick) { Text("Вход для дизайнеров") }
+            TextButton(onClick = onLoginClick) { Text("Вход для дизайнеров и руководителей") }
         }
     }
 }

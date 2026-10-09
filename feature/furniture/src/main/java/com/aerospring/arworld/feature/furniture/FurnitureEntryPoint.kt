@@ -3,6 +3,7 @@ package com.aerospring.arworld.feature.furniture
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalContext
 import com.aerospring.arworld.feature.furniture.data.FurnitureAuthRepository
+import com.aerospring.arworld.feature.furniture.data.FurnitureRole
 import com.aerospring.arworld.feature.furniture.data.FurnitureTokenStore
 import com.aerospring.arworld.feature.furniture.ui.FurnitureCatalogScreen
 import com.aerospring.arworld.feature.furniture.ui.FurnitureGuestScreen
@@ -10,6 +11,11 @@ import com.aerospring.arworld.feature.furniture.ui.FurnitureLoginScreen
 import kotlinx.coroutines.launch
 
 const val FURNITURE_ROUTE = "ar_furniture"
+
+/** Сохранённый вход: дизайнер или руководитель (роль определяет сервер). */
+private data class FurnitureSession(val token: String, val displayName: String, val role: String) {
+    val isManager: Boolean get() = role == FurnitureRole.MANAGER
+}
 
 @Composable
 fun FurnitureEntryPoint(onExit: () -> Unit) {
@@ -19,11 +25,13 @@ fun FurnitureEntryPoint(onExit: () -> Unit) {
 
     var session by remember {
         mutableStateOf(
-            tokenStore.getToken()?.let { token -> tokenStore.getDisplayName()?.let { it to token } }
+            tokenStore.getToken()?.let { token ->
+                tokenStore.getDisplayName()?.let { name -> FurnitureSession(token, name, tokenStore.getRole()) }
+            }
         )
     }
 
-    // Гостевой режим (витрина без входа). Только когда дизайнер не залогинен.
+    // Гостевой режим (витрина без входа). Только когда никто не залогинен.
     var guestMode by remember { mutableStateOf(false) }
 
     fun clearSession() {
@@ -39,17 +47,18 @@ fun FurnitureEntryPoint(onExit: () -> Unit) {
         )
     } else if (current == null) {
         FurnitureLoginScreen(
-            onLoggedIn = { token, displayName ->
-                tokenStore.saveToken(token, displayName)
-                session = displayName to token
+            onLoggedIn = { token, displayName, role ->
+                tokenStore.saveToken(token, displayName, role)
+                session = FurnitureSession(token, displayName, role)
             },
             onGuestClick = { guestMode = true },
         )
     } else {
-        val (displayName, token) = current
+        val token = current.token
         FurnitureCatalogScreen(
             token = token,
-            displayName = displayName,
+            displayName = current.displayName,
+            isManager = current.isManager,
             onUnauthorized = { clearSession() },
             onLogoutClick = {
                 scope.launch { FurnitureAuthRepository.logout(token) }

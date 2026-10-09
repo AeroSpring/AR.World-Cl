@@ -9,8 +9,19 @@ import kotlinx.serialization.json.Json
 import java.net.HttpURLConnection
 import java.net.URL
 
+/** Роль, которую сервер определил при входе. Значения совпадают с полем role в ответе. */
+object FurnitureRole {
+    const val DESIGNER = "designer"
+    const val MANAGER = "manager"
+}
+
 sealed class FurnitureLoginResult {
-    data class Success(val token: String, val displayName: String) : FurnitureLoginResult()
+    data class Success(
+        val token: String,
+        val displayName: String,
+        val role: String = FurnitureRole.DESIGNER,
+    ) : FurnitureLoginResult()
+
     data class Error(val message: String) : FurnitureLoginResult()
 }
 
@@ -18,12 +29,17 @@ sealed class FurnitureLoginResult {
 private data class LoginRequestBody(val login: String, val password: String)
 
 @Serializable
-private data class LoginResponseBody(val token: String, val displayName: String)
+private data class LoginResponseBody(
+    val token: String,
+    val role: String = FurnitureRole.DESIGNER,
+    val displayName: String = "",
+    val clientName: String = "",
+)
 
 /**
- * Авторизация дизайнера. По аналогии с ArBcRepository — простым
- * HttpURLConnection, без Retrofit/Ktor (в проекте пока нет общего
- * HTTP-клиента для JSON-эндпоинтов).
+ * Вход в приложение — общий для дизайнера и руководителя: одна форма,
+ * роль определяет сервер (/furniture/app/auth/login). По аналогии с
+ * ArBcRepository — простым HttpURLConnection, без Retrofit/Ktor.
  */
 object FurnitureAuthRepository {
     private val json = Json { ignoreUnknownKeys = true }
@@ -31,7 +47,7 @@ object FurnitureAuthRepository {
     suspend fun login(login: String, password: String): FurnitureLoginResult =
         withContext(Dispatchers.IO) {
             try {
-                val connection = URL("${ArWorldServerConfig.BASE_URL}/furniture/auth/login")
+                val connection = URL("${ArWorldServerConfig.BASE_URL}/furniture/app/auth/login")
                     .openConnection() as HttpURLConnection
                 connection.requestMethod = "POST"
                 connection.doOutput = true
@@ -42,25 +58,28 @@ object FurnitureAuthRepository {
                 val body = json.encodeToString(LoginRequestBody(login, password))
                 connection.outputStream.use { it.write(body.toByteArray()) }
 
-                if (connection.responseCode != 200) {
-                    return@withContext FurnitureLoginResult.Error(
-                        if (connection.responseCode == 401) "Неверный логин или пароль"
-                        else "Сервер ответил ${connection.responseCode}"
-                    )
+                when (connection.responseCode) {
+                    200 -> Unit
+                    401 -> return@withContext FurnitureLoginResult.Error("Неверный логин или пароль")
+                    403 -> return@withContext FurnitureLoginResult.Error("Вход заблокирован руководителем")
+                    else -> return@withContext FurnitureLoginResult.Error("Сервер ответил ${connection.responseCode}")
                 }
 
                 val raw = connection.inputStream.bufferedReader().use { it.readText() }
                 val parsed = json.decodeFromString(LoginResponseBody.serializer(), raw)
-                FurnitureLoginResult.Success(parsed.token, parsed.displayName)
+                // Руководителю показываем название компании, если имени нет.
+                val name = parsed.displayName.ifBlank { parsed.clientName }
+                FurnitureLoginResult.Success(parsed.token, name, parsed.role)
             } catch (e: Exception) {
                 FurnitureLoginResult.Error(e.message ?: "Ошибка подключения к серверу")
             }
         }
 
-    /** Best-effort — если сети нет, всё равно чистим токен локально в вызывающем коде. */
+    /** Best-effort — если сети нет, всё равно чистим токен локально в вызывающем коде.
+     *  Общий выход: сервер убирает токен любой роли. */
     suspend fun logout(token: String) = withContext(Dispatchers.IO) {
         try {
-            val connection = URL("${ArWorldServerConfig.BASE_URL}/furniture/auth/logout")
+            val connection = URL("${ArWorldServerConfig.BASE_URL}/furniture/app/auth/logout")
                 .openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
             connection.setRequestProperty("Authorization", "Bearer $token")

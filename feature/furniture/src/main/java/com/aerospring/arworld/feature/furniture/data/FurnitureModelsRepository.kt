@@ -14,6 +14,9 @@ data class FurnitureModel(
     val modelName: String,
     val url: String, // относительный путь — для скачивания .glb нужно подставить ArWorldServerConfig.BASE_URL
     val previewUrl: String? = null, // тоже относительный; null, если превью ещё не загружено
+    // Только в каталоге руководителя (модели всех его дизайнеров). У дизайнера и гостя — null.
+    val designerId: String? = null,
+    val designerName: String? = null,
 )
 
 @Serializable
@@ -25,14 +28,19 @@ sealed class FurnitureModelsFetchResult {
     data class Error(val message: String) : FurnitureModelsFetchResult()
 }
 
-/** Каталог моделей текущего дизайнера. Тот же HttpURLConnection-паттерн. */
+/**
+ * Каталог моделей. Дизайнер — свои модели (/furniture/models),
+ * руководитель — модели всех своих дизайнеров (/furniture/manager/models).
+ * Тот же HttpURLConnection-паттерн.
+ */
 object FurnitureModelsRepository {
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun fetchModels(token: String): FurnitureModelsFetchResult =
+    suspend fun fetchModels(token: String, isManager: Boolean = false): FurnitureModelsFetchResult =
         withContext(Dispatchers.IO) {
             try {
-                val connection = URL("${ArWorldServerConfig.BASE_URL}/furniture/models")
+                val path = if (isManager) "/furniture/manager/models" else "/furniture/models"
+                val connection = URL("${ArWorldServerConfig.BASE_URL}$path")
                     .openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.setRequestProperty("Authorization", "Bearer $token")

@@ -13,11 +13,13 @@ import com.aerospring.arworld.feature.furniture.data.FurnitureModelsFetchResult
 import com.aerospring.arworld.feature.furniture.data.FurnitureModelsRepository
 import com.aerospring.arworld.feature.furniture.permissions.RequireCameraPermission
 
-/** Тянет каталог моделей дизайнера, затем передаёт его в AR-сцену. */
+/** Тянет каталог (дизайнер — свои модели, руководитель — модели всех своих дизайнеров),
+ *  затем передаёт его в AR-сцену. */
 @Composable
 fun FurnitureCatalogScreen(
     token: String,
     displayName: String,
+    isManager: Boolean = false,
     onUnauthorized: () -> Unit,
     onLogoutClick: () -> Unit,
     onBackClick: () -> Unit,
@@ -25,8 +27,8 @@ fun FurnitureCatalogScreen(
     var models by remember { mutableStateOf<List<FurnitureModel>?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(token) {
-        when (val result = FurnitureModelsRepository.fetchModels(token)) {
+    LaunchedEffect(token, isManager) {
+        when (val result = FurnitureModelsRepository.fetchModels(token, isManager)) {
             is FurnitureModelsFetchResult.Success -> models = result.models
             FurnitureModelsFetchResult.Unauthorized -> onUnauthorized()
             is FurnitureModelsFetchResult.Error -> errorMessage = result.message

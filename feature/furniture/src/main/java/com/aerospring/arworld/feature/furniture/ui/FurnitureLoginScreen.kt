@@ -15,7 +15,8 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun FurnitureLoginScreen(
-    onLoggedIn: (token: String, displayName: String) -> Unit,
+    // role — FurnitureRole.DESIGNER или FurnitureRole.MANAGER (определяет сервер).
+    onLoggedIn: (token: String, displayName: String, role: String) -> Unit,
     // Гостевой вход (витрина). null — кнопки нет.
     onGuestClick: (() -> Unit)? = null,
 ) {
@@ -33,7 +34,7 @@ fun FurnitureLoginScreen(
             when (val result = FurnitureAuthRepository.login(login.trim(), password)) {
                 is FurnitureLoginResult.Success -> {
                     isLoading = false
-                    onLoggedIn(result.token, result.displayName)
+                    onLoggedIn(result.token, result.displayName, result.role)
                 }
                 is FurnitureLoginResult.Error -> {
                     isLoading = false
@@ -81,7 +82,7 @@ fun FurnitureLoginScreen(
                 if (isLoading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("Войти как дизайнер")
+                    Text("Войти: дизайнер или руководитель")
                 }
             }
 
