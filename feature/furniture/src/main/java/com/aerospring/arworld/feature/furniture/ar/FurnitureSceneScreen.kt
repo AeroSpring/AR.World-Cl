@@ -945,6 +945,12 @@ fun FurnitureSceneScreen(
 
     data class SurfaceHit(val position: Position, val wallYawDegrees: Float?, val surfaceType: SurfaceType)
 
+    // Перетаскивание по стене: допустимое отклонение точки попадания от плоскости текущей стены
+    // (по нормали). ARCore при уточнении сдвигает стену на сантиметры; ложная параллельная плоскость
+    // за стеной (блик, зеркало, проём) — на десятки см (в чате 9: стул ушёл ~0,5 м вглубь).
+    val wallDepthToleranceM = 0.15f
+    val wallJumpLogMs = remember { LongArray(1) }
+
     /**
      * restrictTo — если задан, ищем попадание только по этому типу поверхности
      * (используется при перетаскивании: модель с пола не должна случайно
@@ -961,6 +967,10 @@ fun FurnitureSceneScreen(
         yPx: Float,
         restrictTo: SurfaceType? = null,
         onlyWallYawDegrees: Float? = null,
+        // Только при перетаскивании по стене: точка модели на текущей стене. Попадания в
+        // параллельные плоскости, которые глубже/ближе неё больше чем на wallDepthToleranceM,
+        // отбрасываются — модель остаётся на месте, палец продолжает тянуть.
+        onlyWallNear: Position? = null,
     ): SurfaceHit? {
         val frame = currentFrame ?: return null
         val results = frame.hitTest(xPx, yPx)
@@ -998,6 +1008,32 @@ fun FurnitureSceneScreen(
             .filter { result ->
                 onlyWallYawDegrees == null ||
                         kotlin.math.abs(wrap180(wallYawOf(result.hitPose) - onlyWallYawDegrees)) < 25f
+            }
+            .let { sameYaw ->
+                if (onlyWallYawDegrees == null || onlyWallNear == null) return@let sameYaw
+                // Нормаль текущей стены из её yaw: yaw = atan2(nx, nz) -> n = (sin, 0, cos)
+                val yawRad = Math.toRadians(onlyWallYawDegrees.toDouble())
+                val nx = kotlin.math.sin(yawRad).toFloat()
+                val nz = kotlin.math.cos(yawRad).toFloat()
+                fun depthOf(result: com.google.ar.core.HitResult): Float {
+                    val p = result.hitPose
+                    return (p.tx() - onlyWallNear.x) * nx + (p.tz() - onlyWallNear.z) * nz
+                }
+                val (near, far) = sameYaw.partition { kotlin.math.abs(depthOf(it)) < wallDepthToleranceM }
+                if (debugOn && far.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    if (now - wallJumpLogMs[0] > 700L) {
+                        wallJumpLogMs[0] = now
+                        val worst = far.maxByOrNull { kotlin.math.abs(depthOf(it)) }!!
+                        logEvent(
+                            "WALLJUMP %+.2fm %s".format(
+                                depthOf(worst),
+                                if (near.isEmpty()) "стоп" else "своя стена есть",
+                            ),
+                        )
+                    }
+                }
+                near
             }
             .maxByOrNull { it.distance }
 
@@ -1191,6 +1227,7 @@ fun FurnitureSceneScreen(
             xPx, yPx,
             restrictTo = current.surfaceType,
             onlyWallYawDegrees = if (current.surfaceType == SurfaceType.WALL) current.rotationYDegrees else null,
+            onlyWallNear = if (current.surfaceType == SurfaceType.WALL) current.position else null,
         )
         if (targetHit == null) {
             logNoHit("move")

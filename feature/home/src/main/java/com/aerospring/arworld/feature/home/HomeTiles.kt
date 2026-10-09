@@ -23,8 +23,8 @@ val homeTiles = listOf(
         id = "ar_business_cards",
         title = "AR.Визитки",
         imageRes = R.drawable.tile_ar_business_cards,
-        route = "ar_business_cards", // ВРЕМЕННО для смоук-теста — раздел ещё не готов к реальным пользователям
-        launchDateMillis = 0L // ВРЕМЕННО — верни DEFAULT_LAUNCH_DATE_MILLIS перед публикацией!
+        route = "ar_business_cards",
+        launchDateMillis = 0L // 0 = доступно сразу, дата запуска не актуальна
     ),
     HomeTile(
         id = "ar_facades",
@@ -37,8 +37,8 @@ val homeTiles = listOf(
         id = "ar_furniture",
         title = "AR.Мебель",
         imageRes = R.drawable.tile_ar_furniture,
-        route = "ar_furniture", // ВРЕМЕННО для смоук-теста — раздел ещё не готов к реальным пользователям
-        launchDateMillis = 0L // ВРЕМЕННО — верни DEFAULT_LAUNCH_DATE_MILLIS перед публикацией!
+        route = "ar_furniture",
+        launchDateMillis = 0L // 0 = доступно сразу, дата запуска не актуальна
     ),
     HomeTile(
         id = "ar_indoor_guide",
