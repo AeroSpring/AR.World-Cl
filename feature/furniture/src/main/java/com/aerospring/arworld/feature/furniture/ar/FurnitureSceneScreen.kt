@@ -22,6 +22,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.GridOff
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.LayersClear
 import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Info
@@ -38,6 +40,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -60,6 +64,8 @@ import com.google.ar.core.Session
 import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import io.github.sceneview.ar.ARSceneView
+import io.github.sceneview.ar.camera.ARCameraStream
+import io.github.sceneview.ar.rememberARCameraStream
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
@@ -87,6 +93,35 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 
 private const val TAP_TOLERANCE_DP = 70f
+
+/** На сколько кружок выбора приподнят над полом / отодвинут от стены (м). Модель не сдвигается. */
+private const val MARKER_LIFT_M = 0.015f
+
+/**
+ * Свой материал перекрытия по глубине (лежит в assets/materials модуля feature/furniture).
+ * Это материал SceneView 4.34.0 + «допуск»: реальный предмет прячет модель, только если он
+ * ближе к камере больше чем на «допуск» (см. OCCLUSION_BIAS_PRESETS) × расстояние.
+ * Так пол и стена, на которых стоит/висит модель, перестают «грызть» её края из-за шума глубины.
+ * Скомпилирован matc 1.72.1 (версия Filament внутри SceneView 4.34.0). При обновлении
+ * SceneView материал нужно пересобрать под её версию Filament!
+ */
+private const val OCCLUSION_MATERIAL_FILE = "materials/furniture_camera_stream_depth.filamat"
+/**
+ * Пресеты допуска (м, м на метр расстояния). Компромисс: больше допуск — пол/стена меньше «грызут»
+ * модель; меньше допуск — точнее прячет за близкими реальными предметами (стул вплотную к стулу).
+ * В режиме диагностики долгое нажатие на кнопку «слои» перебирает пресеты (для подбора на месте).
+ * По умолчанию — индекс OCCLUSION_BIAS_DEFAULT.
+ */
+private val OCCLUSION_BIAS_PRESETS = listOf(
+    0.00f to 0.00f,   // как в оригинальном SceneView
+    0.02f to 0.01f,
+    0.03f to 0.02f,
+    0.05f to 0.03f,   // был по умолчанию до 09.10 12:48
+)
+private const val OCCLUSION_BIAS_DEFAULT = 3
+
+/** Во сколько раз служебные долгие нажатия длиннее обычного (обычное ≈ 0,4–0,5 с). */
+private const val SERVICE_LONG_PRESS_FACTOR = 2L
 
 /**
  * Начальное значение режима диагностики раздела «AR.Мебель» (при каждом входе в раздел).
@@ -125,6 +160,17 @@ private val furnitureHelpItems = listOf(
         title = "Двигай и поворачивай",
         text = "Нажми на модель — под ней появится голубой круг. Тяни одним пальцем — " +
                 "переместить, двумя пальцами — повернуть. Выбор снимается нажатием на пустое место."
+    ),
+    HelpItem(
+        marker = "✨",
+        title = "Мебель стоит в комнате, а не поверх неё",
+        text = "Значок «слои» вверху включает перекрытие: настоящие предметы начинают закрывать " +
+                "модель. Поставь стул за реальный диван — и диван честно спрячет его часть, " +
+                "как в жизни. Клиент видит не картинку поверх камеры, а мебель в своей комнате. " +
+                "После включения пару секунд поводи камерой. Значок появляется только на " +
+                "телефонах, которые это умеют.\n" +
+                "❗ Лучше всего работает, когда предмет заметно отличается по цвету от пола и стен: " +
+                "бежевое кресло на бежевом полу телефон различает хуже."
     ),
     HelpItem(
         marker = "🗑️",
@@ -190,6 +236,15 @@ private val furnitureGuestHelpItems = listOf(
         title = "Двигайте и поворачивайте",
         text = "Нажмите на модель — под ней появится голубой круг. Тяните одним пальцем — переместить, " +
                 "двумя пальцами — повернуть. Долгое нажатие — удалить. Модели не заходят друг в друга."
+    ),
+    HelpItem(
+        marker = "✨",
+        title = "Мебель стоит в комнате, а не поверх неё",
+        text = "Нажмите значок «слои» вверху — и настоящие предметы начнут закрывать мебель. " +
+                "Поставьте стул за свой диван: диван спрячет его часть, как в жизни. " +
+                "После включения пару секунд поводите камерой. Значок есть только на телефонах, " +
+                "которые это умеют.\n" +
+                "❗ Лучше всего работает, когда предмет заметно отличается по цвету от пола и стен."
     ),
     HelpItem(
         marker = "💬",
@@ -353,6 +408,18 @@ fun FurnitureSceneScreen(
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
+    // Пункт 5, шаг Б: свой поток камеры, чтобы включать/выключать перекрытие по глубине
+    // (ARCameraStream.isDepthOcclusionEnabled). По умолчанию — то же, что создаёт ARSceneView сам.
+    val cameraStream = rememberARCameraStream(materialLoader) {
+        ARCameraStream(materialLoader, depthOcclusionMaterialFile = OCCLUSION_MATERIAL_FILE).apply {
+            // Допуск задаём сразу и прямо материалу глубины (он наш, параметры в нём точно есть).
+            val (biasM, biasPerM) = OCCLUSION_BIAS_PRESETS[OCCLUSION_BIAS_DEFAULT]
+            depthOcclusionMaterial.defaultInstance.apply {
+                setParameter("occlusionBiasMeters", biasM)
+                setParameter("occlusionBiasPerMeter", biasPerM)
+            }
+        }
+    }
     val modelLoadDispatcher = remember { Dispatchers.IO.limitedParallelism(3) }
 
     // Справка «i»: автопоказ один раз при первом входе на AR-сцену, дальше — только по кнопке.
@@ -371,7 +438,22 @@ fun FurnitureSceneScreen(
     var currentFrame by remember { mutableStateOf<Frame?>(null) }
     var currentSession by remember { mutableStateOf<Session?>(null) }
     var placedModels by remember { mutableStateOf<List<PlacedModel>>(emptyList()) }
-    var debugOn by remember { mutableStateOf(FURNITURE_DEBUG_DEFAULT) }
+    // Гостю диагностика недоступна совсем (решение 09.10): ни при старте, ни долгим нажатием.
+    var debugOn by remember { mutableStateOf(FURNITURE_DEBUG_DEFAULT && !isGuest) }
+    // Пункт 5, шаг А: только ПРОВЕРКА поддержки ARCore Depth API (глубина НЕ включается,
+    // конфигурация сессии не меняется). Показывается в диагностике под счётчиком «Пол/Стены».
+    var depthSupportText by remember { mutableStateOf("Глубина: проверка…") }
+    // Шаг Б: кнопка «Прятать за реальными предметами» показывается, только если устройство
+    // поддерживает DepthMode.AUTOMATIC (всем, включая гостей витрины).
+    // По умолчанию ВЫКЛЮЧЕНО: глубина не считается, сцена работает ровно как раньше.
+    var depthSupported by remember { mutableStateOf(false) }
+    var occlusionOn by remember { mutableStateOf(false) }
+    var occlusionBiasIndex by remember { mutableStateOf(OCCLUSION_BIAS_DEFAULT) }
+    // Диагностика глубины (только debugOn + перекрытие ВКЛ): в ЦЕНТРЕ экрана сравниваем
+    // расстояние по карте глубины ARCore и расстояние до найденной плоскости (пол/стена).
+    // Разница = насколько карта глубины «выпирает» из поверхности, на которой стоит модель.
+    var depthProbeLine by remember { mutableStateOf("") }
+    val depthProbeFrame = remember { IntArray(1) }
     var selectedInstanceId by remember { mutableStateOf<String?>(null) }
     // Модель, которая мешает перетаскиваемой: подсвечивается красным кружком ~3 с.
     var blockerHighlightId by remember { mutableStateOf<String?>(null) }
@@ -468,8 +550,43 @@ fun FurnitureSceneScreen(
     val blockerMaterial = remember(materialLoader) {
         materialLoader.createUnlitColorInstance(Color(0xFFFF3B30).copy(alpha = 0.45f))
     }
+    // Те же цвета для кружков у моделей НА СТЕНЕ: там кружок стоит перед стеной и при отключённой
+    // проверке глубины закрашивал бы саму модель, поэтому стенные кружки всегда с проверкой глубины.
+    val selectionWallMaterial = remember(materialLoader) {
+        materialLoader.createUnlitColorInstance(Color(0xFF29A8FF).copy(alpha = 0.40f))
+    }
+    val blockerWallMaterial = remember(materialLoader) {
+        materialLoader.createUnlitColorInstance(Color(0xFFFF3B30).copy(alpha = 0.45f))
+    }
 
     val tapTolerancePx = with(density) { TAP_TOLERANCE_DP.dp.toPx() }
+
+    // Конфигурация жестов с удвоенным временем долгого нажатия — для служебных долгих нажатий
+    // (диагностика, перебор допуска глубины), чтобы их нельзя было задеть случайно.
+    val baseViewConfig = LocalViewConfiguration.current
+    val slowLongPressConfig = remember(baseViewConfig) {
+        object : ViewConfiguration by baseViewConfig {
+            override val longPressTimeoutMillis: Long
+                get() = baseViewConfig.longPressTimeoutMillis * SERVICE_LONG_PRESS_FACTOR
+        }
+    }
+
+    /** Позиция кружка выбора: чуть над полом / чуть впереди стены (по нормали стены),
+     *  чтобы кружок не сливался с поверхностью. Модель при этом не сдвигается. */
+    fun markerPositionOf(placed: PlacedModel): Position {
+        val p = placed.position
+        return when (placed.surfaceType) {
+            SurfaceType.FLOOR -> Position(p.x, p.y + MARKER_LIFT_M, p.z)
+            SurfaceType.WALL -> {
+                val yawRad = Math.toRadians(placed.rotationYDegrees.toDouble())
+                Position(
+                    p.x + (kotlin.math.sin(yawRad) * MARKER_LIFT_M).toFloat(),
+                    p.y,
+                    p.z + (kotlin.math.cos(yawRad) * MARKER_LIFT_M).toFloat(),
+                )
+            }
+        }
+    }
 
     LaunchedEffect(blockerHighlightId) {
         if (blockerHighlightId != null) {
@@ -937,8 +1054,16 @@ fun FurnitureSceneScreen(
                         modelOffset = when (surfaceHit.surfaceType) {
                             // Опорная точка -> центр основания: центр по X/Z, низ на полу
                             SurfaceType.FLOOR -> Position(-bounds.centerX, -bounds.minY, -bounds.centerZ)
-                            // На стене центрируем только в плоскости стены; глубину не трогаем
-                            SurfaceType.WALL -> Position(-bounds.centerX, -bounds.centerY, 0f)
+                            // На стене: центр в плоскости стены, а по глубине модель ставится
+                            // ЗАДНЕЙ стороной (minZ, +Z смотрит из стены) ровно на стену. Раньше
+                            // глубина не трогалась, и модель с опорой в центре (стул) наполовину
+                            // уходила в стену — без глубины это не видно, а режим перекрытия
+                            // честно прятал «утонувшую» часть (видео 09.10 12:28: срез сиденья).
+                            SurfaceType.WALL -> Position(
+                                -bounds.centerX,
+                                -bounds.centerY,
+                                -(bounds.centerZ - bounds.halfZ),
+                            )
                         },
                     )
                 } else {
@@ -1386,6 +1511,24 @@ fun FurnitureSceneScreen(
         }
     }
 
+    // Перекрытие в материале потока камеры. Без глубины в сессии SceneView сам остаётся на
+    // обычном материале, поэтому флаг включаем вместе с depthMode (оба от occlusionOn).
+    SideEffect {
+        cameraStream.isDepthOcclusionEnabled = occlusionOn
+        OCCLUSION_BIAS_PRESETS[occlusionBiasIndex].let { (biasM, biasPerM) ->
+            cameraStream.depthOcclusionMaterial.defaultInstance.apply {
+                setParameter("occlusionBiasMeters", biasM)
+                setParameter("occlusionBiasPerMeter", biasPerM)
+            }
+        }
+        // Кружок выбора и красный кружок «кто мешает» — это интерфейс, а не мебель. В режиме
+        // перекрытия шумная карта глубины пола рвёт их на пятна, поэтому НА ПОЛУ они рисуются
+        // поверх всего (без проверки глубины). На стене — всегда с проверкой (см. *WallMaterial).
+        // В обычном режиме — как раньше.
+        selectionMaterial.setDepthCulling(!occlusionOn)
+        blockerMaterial.setDepthCulling(!occlusionOn)
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ARSceneView(
             modifier = Modifier
@@ -1398,8 +1541,23 @@ fun FurnitureSceneScreen(
             modelLoader = modelLoader,
             materialLoader = materialLoader,
             planeRenderer = showGrid,
-            sessionConfiguration = { _: Session, config ->
+            // Глубина считается только при включённом перекрытии. Смена режима на лету —
+            // штатный путь SceneView (LaunchedEffect(depthMode) → session.configure), остальной
+            // конфиг сессии при этом сохраняется. Возможен короткий рывок кадра при переключении.
+            depthMode = if (occlusionOn) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED,
+            cameraStream = cameraStream,
+            sessionConfiguration = { session: Session, config ->
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                // Только опрос возможностей устройства; config.depthMode здесь НЕ трогаем — им управляет параметр depthMode выше.
+                depthSupportText = try {
+                    val auto = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
+                    val raw = session.isDepthModeSupported(Config.DepthMode.RAW_DEPTH_ONLY)
+                    depthSupported = auto
+                    "Глубина: " + (if (auto) "поддерживается" else "НЕ поддерживается") +
+                            " (raw: " + (if (raw) "да" else "нет") + ")"
+                } catch (e: Exception) {
+                    "Глубина: ошибка проверки (${e.javaClass.simpleName})"
+                }
             },
             onSessionUpdated = { session: Session, frame: Frame ->
                 if (debugOn) {
@@ -1424,6 +1582,11 @@ fun FurnitureSceneScreen(
                 if (measureMode && measurePointB == null && viewportWidthPx > 0 && viewportHeightPx > 0) {
                     val live = measureHitAt(viewportWidthPx / 2f, viewportHeightPx / 2f)
                     if (live != measureLive) measureLive = live
+                }
+                if (debugOn && occlusionOn && viewportWidthPx > 0 && depthProbeFrame[0]++ % 10 == 0) {
+                    depthProbeLine = probeDepthAtCenter(frame, viewportWidthPx, viewportHeightPx)
+                } else if (!(debugOn && occlusionOn) && depthProbeLine.isNotEmpty()) {
+                    depthProbeLine = ""
                 }
             },
             onTouchEvent = touch@{ event: MotionEvent, _ ->
@@ -1751,8 +1914,9 @@ fun FurnitureSceneScreen(
                                 CylinderNode(
                                     radius = ringRadius,
                                     height = 0.002f,
-                                    materialInstance = selectionMaterial,
-                                    position = placed.position,
+                                    materialInstance = if (placed.surfaceType == SurfaceType.WALL)
+                                        selectionWallMaterial else selectionMaterial,
+                                    position = markerPositionOf(placed),
                                     rotation = if (placed.surfaceType == SurfaceType.WALL)
                                         Rotation(90f, placed.rotationYDegrees, 0f)
                                     else
@@ -1794,8 +1958,9 @@ fun FurnitureSceneScreen(
                                 CylinderNode(
                                     radius = blockRadius,
                                     height = 0.003f,
-                                    materialInstance = blockerMaterial,
-                                    position = placed.position,
+                                    materialInstance = if (placed.surfaceType == SurfaceType.WALL)
+                                        blockerWallMaterial else blockerMaterial,
+                                    position = markerPositionOf(placed),
                                     rotation = if (placed.surfaceType == SurfaceType.WALL)
                                         Rotation(90f, placed.rotationYDegrees, 0f)
                                     else
@@ -1856,6 +2021,47 @@ fun FurnitureSceneScreen(
                     tint = if (measureMode) Color(0xFF00E676) else Color.White,
                 )
             }
+            // Перекрытие моделей реальными предметами по карте глубины (ARCore Depth API).
+            // Доступно всем, включая гостей витрины (решение 09.10).
+            if (depthSupported) {
+                // Box вместо IconButton: нужно ещё долгое нажатие (только в диагностике —
+                // перебор пресетов допуска). Размер 48 dp — как у IconButton, ряд не съезжает.
+                // Долгое нажатие (перебор допуска) — тоже вдвое дольше обычного.
+                CompositionLocalProvider(LocalViewConfiguration provides slowLongPressConfig) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = {
+                                        occlusionOn = !occlusionOn
+                                        statusMessage = if (occlusionOn) {
+                                            if (isGuest) "Прятать за реальными предметами: ВКЛ. Поводите камерой пару секунд"
+                                            else "Прятать за реальными предметами: ВКЛ. Поводи камерой пару секунд"
+                                        } else {
+                                            "Прятать за реальными предметами: ВЫКЛ"
+                                        }
+                                    },
+                                    onLongPress = {
+                                        if (debugOn) {
+                                            occlusionBiasIndex = (occlusionBiasIndex + 1) % OCCLUSION_BIAS_PRESETS.size
+                                            val (bm, bpm) = OCCLUSION_BIAS_PRESETS[occlusionBiasIndex]
+                                            statusMessage = "Допуск глубины: %.0f см + %.0f см/м".format(bm * 100f, bpm * 100f)
+                                        }
+                                    },
+                                )
+                            },
+                    ) {
+                        Icon(
+                            if (occlusionOn) Icons.Default.Layers else Icons.Default.LayersClear,
+                            contentDescription = if (occlusionOn) "Не прятать за реальными предметами"
+                            else "Прятать за реальными предметами",
+                            tint = if (occlusionOn) Color(0xFF00E676) else Color.White,
+                        )
+                    }
+                }
+            }
             // Справка «i» — в том же стиле, что и остальные кнопки: белая иконка прямо на камере.
             IconButton(onClick = { showHelp = true }) {
                 Icon(Icons.Outlined.Info, contentDescription = "Справка", tint = Color.White)
@@ -1874,24 +2080,37 @@ fun FurnitureSceneScreen(
         // Ряд кнопок: отступ 16 dp + высота IconButton 48 dp = 64 dp, поэтому счётчик начинается
         // с 64 dp и по касаниям с кнопками больше не пересекается. Начало текста выровнено по
         // левому краю иконки «Назад» (16 + 12 + 12 = 28 dp от края экрана).
-        Text(
-            if (debugOn && trackingPointsShown >= 0) {
-                "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount  Точки: $trackingPointsShown"
-            } else {
-                "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount"
-            },
-            color = Color.White,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(top = 64.dp, start = 16.dp)
-                .pointerInput(Unit) {
-                    detectTapGestures(onLongPress = {
-                        debugOn = !debugOn
-                        statusMessage = if (debugOn) "Режим диагностики включён" else "Режим диагностики выключен"
-                    })
-                }
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        )
+        // Долгое нажатие на счётчик (вкл/выкл диагностики) — вдвое дольше обычного,
+        // чтобы пользователь не включил её случайно.
+        CompositionLocalProvider(LocalViewConfiguration provides slowLongPressConfig) {
+            Text(
+                if (debugOn && trackingPointsShown >= 0) {
+                    "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount  Точки: $trackingPointsShown\n" +
+                            depthSupportText + (if (occlusionOn) " · перекрытие ВКЛ" + biasLabel(occlusionBiasIndex) else "") +
+                            (if (depthProbeLine.isNotEmpty()) "\n$depthProbeLine" else "")
+                } else if (debugOn) {
+                    "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount\n" +
+                            depthSupportText + (if (occlusionOn) " · перекрытие ВКЛ" + biasLabel(occlusionBiasIndex) else "") +
+                            (if (depthProbeLine.isNotEmpty()) "\n$depthProbeLine" else "")
+                } else {
+                    "Пол: $horizontalPlaneCount  Стены: $verticalPlaneCount"
+                },
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 64.dp, start = 16.dp)
+                    .pointerInput(isGuest) {
+                        // У гостя долгое нажатие на счётчик ничего не делает → диагностика и
+                        // перебор допуска глубины (он работает только в диагностике) ему недоступны.
+                        if (isGuest) return@pointerInput
+                        detectTapGestures(onLongPress = {
+                            debugOn = !debugOn
+                            statusMessage = if (debugOn) "Режим диагностики включён" else "Режим диагностики выключен"
+                        })
+                    }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
 
         if (debugOn) {
             Text(
@@ -2351,4 +2570,53 @@ private fun MeasurePanel(
             }
         }
     }
+}
+
+/**
+ * Диагностика перекрытия: в центре экрана — расстояние по карте глубины ARCore и расстояние
+ * до плоскости (пол/стена) по hit-test. Карта глубины — в ориентации кадра камеры, но центр
+ * экрана всегда соответствует центру кадра, поэтому берём средний пиксель 5×5 в центре.
+ * Глубина ARCore — расстояние вдоль оси камеры; в центре кадра оно совпадает с расстоянием луча.
+ */
+private fun probeDepthAtCenter(frame: Frame, viewW: Int, viewH: Int): String {
+    val planeText = run {
+        val hit = frame.hitTest(viewW / 2f, viewH / 2f).firstOrNull { r ->
+            val t = r.trackable
+            t is Plane && t.isPoseInPolygon(r.hitPose)
+        } ?: return@run null
+        val kind = if ((hit.trackable as Plane).type == Plane.Type.VERTICAL) "стена" else "пол"
+        kind to hit.distance
+    }
+    val depthM: Float? = try {
+        frame.acquireDepthImage16Bits().use { img ->
+            val plane = img.planes[0]
+            val buf = plane.buffer.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val cx = img.width / 2
+            val cy = img.height / 2
+            var sum = 0L
+            var n = 0
+            for (dy in -2..2) for (dx in -2..2) {
+                val x = (cx + dx).coerceIn(0, img.width - 1)
+                val y = (cy + dy).coerceIn(0, img.height - 1)
+                val mm = buf.getShort(y * plane.rowStride + x * plane.pixelStride).toInt() and 0xFFFF
+                if (mm > 0) { sum += mm; n++ }
+            }
+            if (n == 0) null else sum / n / 1000f
+        }
+    } catch (e: Exception) {
+        null
+    }
+    val d = depthM?.let { "%.2f м".format(it) } ?: "нет"
+    val p = planeText?.let { "%s %.2f м".format(it.first, it.second) } ?: "нет плоскости"
+    val diff = if (depthM != null && planeText != null) {
+        val cm = (planeText.second - depthM) * 100f
+        "  разница %+.0f см".format(cm)
+    } else ""
+    return "Центр: глубина $d · $p$diff"
+}
+
+/** Подпись текущего допуска для строки диагностики, например « · допуск 5+3/м». */
+private fun biasLabel(index: Int): String {
+    val (bm, bpm) = OCCLUSION_BIAS_PRESETS[index]
+    return " · допуск %.0f+%.0f/м".format(bm * 100f, bpm * 100f)
 }

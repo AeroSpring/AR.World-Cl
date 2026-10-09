@@ -1,0 +1,186 @@
+// furniture_camera_stream_depth.mat — AR.Мебель (AR.World), based on SceneView v4.34.0
+// arsceneview/src/main/materials/camera_stream_depth.mat. ONLY change: an occlusion bias.
+// Real-world depth is pushed AWAY from the camera by
+//     bias = occlusionBiasMeters + occlusionBiasPerMeter * depth_m
+// before it is written to gl_FragDepth, so a real surface hides a virtual fragment only when
+// it is clearly (more than `bias`) in front of it. Furniture standing on the floor / hanging on
+// a wall is no longer "eaten" by the noisy depth of that same floor/wall. Both params = 0 gives
+// exactly the original SceneView behaviour. Fog still uses the unbiased depth.
+// Compiled with matc 1.72.1 (Filament runtime of SceneView 4.34.0):
+//     matc --optimize-size -p mobile -a opengl -a vulkan -o furniture_camera_stream_depth.filamat furniture_camera_stream_depth.mat
+//
+// camera_stream_depth.mat — see CONTRIBUTING.md "Filament runtime ↔ .filamat ABI invariant"
+//
+// Purpose:    Full-screen AR camera passthrough with ARCore depth occlusion and optional
+//             environment-aware fog (issue #1717). Writes gl_FragDepth so virtual geometry
+//             is correctly occluded by the real world.
+// Used by:    ARCameraStream (depthOcclusionMaterialFile) — ARSceneView depth-occlusion path.
+// Parameters:
+//   cameraTexture — samplerExternal, the live ARCore camera feed.
+//   depthTexture  — sampler2d, ARCore packed depth (mm) in the .xy channels.
+//   uvTransform   — float4x4, ARCore display-rotation UV transform.
+//   fogEnabled    — float, 0/1 branchless gate multiplied into the fog factor.
+//   fogColor      — float3, RGB haze colour (mirrors FogNode.color).
+//   fogDensity    — float [0,1], exponential falloff coefficient in 1/m.
+//   fogStart      — float, distance in metres where fog begins to accumulate.
+//   fogEnd        — float, distance in metres where fog is fully opaque.
+// matc profile: C (ARCore — "--optimize-size -p mobile -a opengl -a vulkan").
+material {
+    name : depth,
+    shadingModel : unlit,
+    blending : opaque,
+    culling : none,
+    vertexDomain : device,
+    parameters : [
+        {
+            type : samplerExternal,
+            name : cameraTexture
+        },
+        {
+            type : sampler2d,
+            name : depthTexture
+        },
+        {
+            type : float4x4,
+            name : uvTransform
+        },
+        // Environment-aware AR fog (issue #1717). Disabled by default so the
+        // material is a strict superset of the previous depth-only behaviour.
+        //
+        //  - `fogEnabled`  : 0.0 or 1.0. Branchless gate — multiplied into the
+        //                    fog factor so the fog mix collapses to a no-op
+        //                    when disabled, avoiding a divergent branch.
+        //  - `fogColor`    : RGB haze colour. Matches `FogNode.color`'s
+        //                    semantic (`Color(0xFFCCDDFF)` default in code).
+        //  - `fogDensity`  : Falloff coefficient in 1/m. Used in the
+        //                    exponential term `1 - exp(-density * (d - start))`.
+        //                    Range [0, 1] like `FogNode.density`.
+        //  - `fogStart`    : Distance in metres at which fog begins to
+        //                    accumulate. Real-world surfaces closer than this
+        //                    stay crisp.
+        //  - `fogEnd`      : Distance in metres at which fog is fully opaque
+        //                    (factor clamped to 1).
+        //
+        // Depth pixels with `depth_mm == 0` (ARCore "no depth available")
+        // contribute no fog — we drive the factor to 0 in that case to avoid
+        // tinting the camera passthrough on regions the depth API can't see.
+        {
+            type : float,
+            name : fogEnabled
+        },
+        {
+            type : float3,
+            name : fogColor
+        },
+        {
+            type : float,
+            name : fogDensity
+        },
+        {
+            type : float,
+            name : fogStart
+        },
+        {
+            type : float,
+            name : fogEnd
+        },
+        // AR.Мебель: occlusion bias, metres (constant part) and metres per metre of depth.
+        {
+            type : float,
+            name : occlusionBiasMeters
+        },
+        {
+            type : float,
+            name : occlusionBiasPerMeter
+        }
+    ],
+    requires : [
+        uv0
+    ]
+}
+
+fragment {
+    // Stand-in distance, in metres, for texels ARCore returned no depth for. Far enough
+    // that the projected NDC depth sits on the far plane (so nothing is ever occluded by
+    // a hole in the depth image), finite so the projection never divides by zero. See the
+    // occlusion block below.
+    const float kNoDepthDistanceMeters = 1000.0;
+
+    // Exact sRGB EOTF (IEC 61966-2-1), issue #3338 — see camera_stream_flat.mat for the
+    // full rationale. Short version: the camera texel is sRGB-encoded full-range BT.709
+    // (ARCore dataspace 0x08810000), and Filament re-encodes with the exact sRGB OETF at
+    // the color-grading output stage, so decoding with `pow(c, 2.2)` (what Filament's
+    // `inverseTonemapSRGB()` does) left an achromatic S-curve on the camera background
+    // worth up to -8.5/255 in the shadows. Kept verbatim in all three camera materials —
+    // matc has no include mechanism.
+    vec3 srgbToLinearExact(const vec3 srgb) {
+        vec3 s = clamp(srgb, 0.0, 1.0);
+        return mix(s * (1.0 / 12.92),
+                   pow((s + 0.055) * (1.0 / 1.055), vec3(2.4)),
+                   step(vec3(0.04045), s));
+    }
+
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        vec3 camera = Inverse_Tonemap_Filmic(
+                srgbToLinearExact(texture(materialParams_cameraTexture, getUV0()).rgb));
+        vec2 packed_depth = texture(materialParams_depthTexture, getUV0()).xy;
+        float depth_mm = dot(packed_depth, vec2(255.f, 256.f * 255.f));
+        float depth_m = depth_mm / 1000.f;
+
+        // Environment-aware fog blend. We deliberately compute the term every
+        // pixel rather than `if (fogEnabled > 0.5)` to keep the shader divergent-
+        // free on tile-based GPUs.
+        //
+        // depth_valid : 1 when ARCore returned a non-zero depth for this texel,
+        //               0 otherwise. Keeps the camera pixel crisp on regions
+        //               where the depth API has no data (e.g. moving objects,
+        //               sky, near edges).
+        // adjusted   : metres beyond `fogStart`, clamped to fogEnd.
+        // factor     : 1 - exp(-density * adjusted), clamped to [0, 1].
+        float depth_valid = step(0.001f, depth_m);
+        float adjusted = clamp(depth_m - materialParams.fogStart, 0.f,
+                               max(materialParams.fogEnd - materialParams.fogStart, 0.001f));
+        float factor = 1.f - exp(-materialParams.fogDensity * adjusted);
+        factor = clamp(factor, 0.f, 1.f) * depth_valid * materialParams.fogEnabled;
+
+        vec3 fogged = mix(camera, materialParams.fogColor, factor);
+        material.baseColor.rgb = fogged;
+
+        // Depth occlusion path.
+        //
+        // "No depth available" must mean "occlude nothing" (#3340). ARCore reports
+        // `depth_mm == 0` for every texel it could not solve — sky, thin edges, moving
+        // subjects, and (crucially) EVERY texel of the 1x1 placeholder texture that is
+        // bound until the first depth image lands, plus whole frames on devices where
+        // depth estimation drops out mid-session.
+        //
+        // Feeding 0 straight into the projection puts the sample at the camera origin,
+        // so `view.w` is 0 and `ndc_depth` is a division by zero: +inf, which the
+        // rasterizer clamps to 1.0 when writing gl_FragDepth. Filament is reverse-Z
+        // (1.0 = NEAR, 0.0 = far — see ARDepthOfField's convention note), so the camera
+        // quad landed on the near plane and occluded EVERY virtual fragment exactly
+        // where we knew the least about the real world. The model simply vanished.
+        //
+        // Substitute a far-but-finite distance for invalid texels instead. It runs
+        // through the same projection as a real sample, so the result is a legal NDC
+        // depth near the far plane under whatever convention the active projection
+        // uses — no division by zero, no clamped infinity, and "no data" degrades to
+        // "occludes nothing", which is the documented intent.
+        float occlusion_bias_m = max(0.f, materialParams.occlusionBiasMeters
+                + materialParams.occlusionBiasPerMeter * depth_m);
+        float occlusion_depth_m = mix(kNoDepthDistanceMeters, depth_m + occlusion_bias_m, depth_valid);
+        vec4 view = mulMat4x4Float3(getClipFromViewMatrix(), vec3(0.f, 0.f, -occlusion_depth_m));
+        float ndc_depth = view.z / view.w;
+        gl_FragDepth = ndc_depth;
+    }
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        material.uv0 = mulMat4x4Float3(materialParams.uvTransform, vec3(material.uv0.x, material.uv0.y, 0.f)).xy;
+        vec4 clip = getPosition();
+        clip.z = 0.9999f;
+        material.worldPosition = mulMat4x4Float3(getWorldFromClipMatrix(), clip.xyz);
+    }
+}
