@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,6 +27,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.ar.core.AugmentedImage
+import com.google.ar.core.AugmentedImageDatabase
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.Pose
@@ -48,6 +51,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -80,6 +84,32 @@ private fun stamp(pattern: String) = SimpleDateFormat(pattern, Locale.US).format
  */
 @Composable
 fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
+    // Эталонные снимки фасада грузятся с сервера ДО создания AR-сессии:
+    // база изображений ARCore задаётся в конфигурации сессии.
+    var referencesResult by remember { mutableStateOf<StandReferencesResult?>(null) }
+    LaunchedEffect(Unit) {
+        referencesResult = withTimeoutOrNull(30_000) { StandReferenceRepository.load() }
+            ?: StandReferencesResult.Failed("нет ответа сервера за 30 с")
+    }
+    val loaded = referencesResult
+    if (loaded == null) {
+        Column(
+            modifier = Modifier.fillMaxSize().background(Color.Black),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            CircularProgressIndicator(color = Color.White)
+            Text("Загружаю эталонные снимки фасада…", color = Color.White, modifier = Modifier.padding(top = 16.dp))
+        }
+        return
+    }
+    val references = (loaded as? StandReferencesResult.Loaded)?.references ?: emptyList()
+    val referencesLoadText = when (loaded) {
+        is StandReferencesResult.Loaded -> "Эталоны с сервера: ${loaded.references.size}" +
+            if (loaded.failed.isEmpty()) "" else " · не загрузились: ${loaded.failed.joinToString()}"
+        is StandReferencesResult.Failed -> "Эталоны с сервера: ОШИБКА (${loaded.reason})"
+    }
+
     var playbackUri by remember { mutableStateOf<Uri?>(null) }
     val pickRecording = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) playbackUri = uri
@@ -87,6 +117,8 @@ fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
     key(playbackUri) {
         StandScene(
             locationGranted = locationGranted,
+            references = references,
+            referencesLoadText = referencesLoadText,
             playbackUri = playbackUri,
             onPickRecording = { pickRecording.launch(arrayOf("video/mp4", "*/*")) },
             onBackToLive = { playbackUri = null },
@@ -98,6 +130,8 @@ fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
 @Composable
 private fun StandScene(
     locationGranted: Boolean,
+    references: List<StandReference>,
+    referencesLoadText: String,
     playbackUri: Uri?,
     onPickRecording: () -> Unit,
     onBackToLive: () -> Unit,
@@ -113,11 +147,23 @@ private fun StandScene(
     val cubeMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFFFF9800))
     }
+    // Полупрозрачная «пластина» поверх распознанного фрагмента фасада: видно, насколько точно
+    // ARCore совместил эталон с реальным зданием.
+    val plateMaterial = remember(materialLoader) {
+        materialLoader.createUnlitColorInstance(Color(0xFF00E5FF).copy(alpha = 0.35f))
+    }
+    // Ожидаемый размер каждой пластины (ширина из манифеста, высота по пропорциям снимка).
+    val plateSizes = remember(references) {
+        references.associate { r ->
+            r.name to Size(r.widthMeters, 0.02f, r.widthMeters * r.bitmap.height / r.bitmap.width)
+        }
+    }
 
     // ── Что умеет устройство (заполняется один раз при создании сессии) ──
     var depthSupportText by remember { mutableStateOf("Глубина: проверяю…") }
     var semanticSupportText by remember { mutableStateOf("Семантика: проверяю…") }
     var geoSupportText by remember { mutableStateOf("Geospatial: проверяю…") }
+    var imagesDbText by remember { mutableStateOf(referencesLoadText) }
     var sessionError by remember { mutableStateOf<String?>(null) }
 
     // ── Живые замеры ──
@@ -126,6 +172,7 @@ private fun StandScene(
     var depthLine by remember { mutableStateOf("") }
     var semanticLine by remember { mutableStateOf("") }
     var geoLine by remember { mutableStateOf("") }
+    var imagesLine by remember { mutableStateOf("") }
     var vpsLine by remember { mutableStateOf(if (isPlayback) "VPS: не проверяется в записи" else "VPS: жду координаты") }
 
     // ── Переключатели ──
@@ -143,6 +190,11 @@ private fun StandScene(
     val vpsRequested = remember { BooleanArray(1) }
     val lastCameraPose = remember { AtomicReference<Pose?>(null) }
     val cubeNodeHolder = remember { arrayOfNulls<Node>(1) }
+    val sessionStartMs = remember { System.currentTimeMillis() }
+
+    // Распознанные фрагменты фасада (ARCore отдаёт один и тот же трекабл, equals по нативному объекту).
+    val trackedImages = remember { mutableStateListOf<AugmentedImage>() }
+    val plateNodes = remember { mutableMapOf<String, Node>() }
 
     val journal = remember { mutableStateListOf<String>() }
     var message by remember { mutableStateOf<String?>(null) }
@@ -163,6 +215,13 @@ private fun StandScene(
         }
     }
 
+    LaunchedEffect(trackedImages.size) {
+        if (trackedImages.isNotEmpty()) {
+            delay(100)
+            plateNodes.values.forEach { it.isVisible = false; it.isVisible = true }
+        }
+    }
+
     SideEffect {
         cameraStream.isDepthOcclusionEnabled = depthOcclusionOn
         cameraStream.isPersonOcclusionEnabled = personOcclusionOn
@@ -172,6 +231,7 @@ private fun StandScene(
         if (isPlayback) "РЕЖИМ: воспроизведение записи" else null,
         trackingLine,
         trackingFailure?.let { "Причина: $it" },
+        imagesDbText, imagesLine.ifEmpty { if (references.isEmpty()) null else "Фасад: ищу…" },
         depthSupportText, depthLine.ifEmpty { null },
         semanticSupportText, semanticLine.ifEmpty { null },
         geoSupportText, geoLine.ifEmpty { null }, vpsLine,
@@ -251,7 +311,23 @@ private fun StandScene(
                     isPlayback -> "выключен в режиме записи"
                     else -> "включён"
                 }
-                Log.i(TAG, "Сессия: $depthSupportText | $semanticSupportText | $geoSupportText")
+                if (references.isNotEmpty()) {
+                    val db = AugmentedImageDatabase(session)
+                    val added = mutableListOf<String>()
+                    val rejected = mutableListOf<String>()
+                    references.forEach { r ->
+                        try {
+                            db.addImage(r.name, r.bitmap, r.widthMeters)
+                            added += r.name
+                        } catch (e: Exception) {
+                            rejected += "${r.name} (${e.javaClass.simpleName})"
+                        }
+                    }
+                    config.augmentedImageDatabase = db
+                    imagesDbText = "Эталоны в базе ARCore: ${added.joinToString().ifEmpty { "нет" }}" +
+                        if (rejected.isEmpty()) "" else " · отклонены: ${rejected.joinToString()}"
+                }
+                Log.i(TAG, "Сессия: $depthSupportText | $semanticSupportText | $geoSupportText | $imagesDbText")
             },
             onSessionFailed = { e ->
                 sessionError = "Ошибка сессии: ${e.javaClass.simpleName}: ${e.message}"
@@ -273,8 +349,32 @@ private fun StandScene(
                     lastCameraPose.set(camera.pose)
                 }
 
+                // Распознавание эталонов фасада.
+                for (img in frame.getUpdatedTrackables(AugmentedImage::class.java)) {
+                    if (img.trackingState == TrackingState.TRACKING && trackedImages.none { it == img }) {
+                        trackedImages.add(img)
+                        val sec = (System.currentTimeMillis() - sessionStartMs) / 1000f
+                        val dist = distanceMeters(camera.pose, img.centerPose)
+                        val line = stamp("HH:mm:ss") + " | ПЕРВОЕ РАСПОЗНАВАНИЕ «${img.name}»: " +
+                            "%.1f с после старта, %.1f м, %s".format(sec, dist, img.trackingMethod)
+                        journal.add(line)
+                        message = "Фасад распознан: «${img.name}» с %.1f м".format(dist)
+                        Log.i(TAG, line)
+                    }
+                }
+
                 frameCounter[0]++
                 if (frameCounter[0] % PROBE_EVERY_N_FRAMES == 0) {
+                    imagesLine = if (trackedImages.isEmpty()) "" else "Фасад: " + trackedImages.joinToString(" · ") { img ->
+                        val method = when (img.trackingMethod) {
+                            AugmentedImage.TrackingMethod.FULL_TRACKING -> "ВИЖУ"
+                            AugmentedImage.TrackingMethod.LAST_KNOWN_POSE -> "помню"
+                            else -> "нет"
+                        }
+                        "«${img.name}» $method %.1f м (%.1f×%.1f м)".format(
+                            distanceMeters(camera.pose, img.centerPose), img.extentX, img.extentZ
+                        )
+                    }
                     trackingLine = "Трекинг: ${camera.trackingState} · %.0f fps".format(smoothFps[0])
                     depthLine = probeDepthAtCenter(frame, viewW, viewH)
                     semanticLine = probeSemantics(frame)
@@ -305,6 +405,16 @@ private fun StandScene(
                 }
             },
             content = {
+                trackedImages.forEach { img ->
+                    val plateSize = plateSizes[img.name] ?: Size(img.extentX, 0.02f, img.extentZ)
+                    AugmentedImageNode(augmentedImage = img) {
+                        CubeNode(
+                            size = plateSize,
+                            materialInstance = plateMaterial,
+                            apply = { plateNodes[img.name] = this }
+                        )
+                    }
+                }
                 cubePosition?.let { pos ->
                     key(pos) {
                         CubeNode(
@@ -462,4 +572,12 @@ private fun StandScene(
             recorder.recordingFile?.let { Log.i(TAG, "Последний файл записи: ${it.absolutePath}") }
         }
     }
+}
+
+/** Расстояние от камеры до центра распознанного изображения, метры. */
+private fun distanceMeters(a: Pose, b: Pose): Float {
+    val dx = a.tx() - b.tx()
+    val dy = a.ty() - b.ty()
+    val dz = a.tz() - b.tz()
+    return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
 }
