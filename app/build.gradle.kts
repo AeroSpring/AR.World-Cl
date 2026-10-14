@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -6,7 +8,7 @@ plugins {
 
 // Секреты — только из local.properties (он в .gitignore, репозиторий публичный).
 // ARCORE_API_KEY нужен для Geospatial в AR.Фасадах; без него остальное работает как раньше.
-val localProperties = java.util.Properties().apply {
+val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
