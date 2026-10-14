@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Разрешения (камера, геолокация, интернет) и ключ ARCore API объявлены в манифесте :app. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

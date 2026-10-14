@@ -30,8 +30,10 @@ val homeTiles = listOf(
         id = "ar_facades",
         title = "AR.Фасады",
         imageRes = R.drawable.tile_ar_facades,
-        route = null,
-        launchDateMillis = DEFAULT_LAUNCH_DATE_MILLIS
+        // ВРЕМЕННО (ветка feature/facades, стенд): открыто для проверки на телефоне.
+        // Перед любым релизом вернуть route = null и DEFAULT_LAUNCH_DATE_MILLIS.
+        route = "ar_facades",
+        launchDateMillis = 0L
     ),
     HomeTile(
         id = "ar_furniture",

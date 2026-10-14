@@ -23,6 +23,11 @@
             android:value="required"
             tools:replace="android:value" />
 
+        <!-- Ключ ARCore API (Geospatial). Значение подставляется из local.properties, в git его нет. -->
+        <meta-data
+            android:name="com.google.android.ar.API_KEY"
+            android:value="${arcoreApiKey}" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -4,6 +4,13 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Секреты — только из local.properties (он в .gitignore, репозиторий публичный).
+// ARCORE_API_KEY нужен для Geospatial в AR.Фасадах; без него остальное работает как раньше.
+val localProperties = java.util.Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.aerospring.arworld"
     compileSdk = 36
@@ -14,6 +21,8 @@ android {
         targetSdk = 35
         versionCode = 14
         versionName = "0.1.14"
+
+        manifestPlaceholders["arcoreApiKey"] = localProperties.getProperty("ARCORE_API_KEY", "")
     }
 
     buildTypes {
@@ -46,6 +55,7 @@ dependencies {
     implementation(project(":feature:home"))
     implementation(project(":feature:where-anything-is"))
     implementation(project(":feature:furniture"))
+    implementation(project(":feature:facades"))
     implementation(project(":feature:about"))
 
     implementation(libs.androidx.core.ktx)

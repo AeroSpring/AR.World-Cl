@@ -13,6 +13,8 @@ import com.aerospring.arworld.feature.arbc.AR_BUSINESS_CARDS_ROUTE
 import com.aerospring.arworld.feature.arbc.ArBcEntryPoint
 import com.aerospring.arworld.feature.arbc.AR_BUSINESS_CARDS_ROUTE
 import com.aerospring.arworld.feature.arbc.ArBcEntryPoint
+import com.aerospring.arworld.feature.facades.FACADES_ROUTE
+import com.aerospring.arworld.feature.facades.FacadesEntryPoint
 import com.aerospring.arworld.feature.furniture.FURNITURE_ROUTE
 import com.aerospring.arworld.feature.furniture.FurnitureEntryPoint
 import com.aerospring.arworld.feature.home.HomeScreen
@@ -64,6 +66,11 @@ private fun ArWorldNavHost(
         }
         composable(FURNITURE_ROUTE) {
             FurnitureEntryPoint(
+                onExit = { navController.popBackStack() }
+            )
+        }
+        composable(FACADES_ROUTE) {
+            FacadesEntryPoint(
                 onExit = { navController.popBackStack() }
             )
         }
