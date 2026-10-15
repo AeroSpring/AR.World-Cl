@@ -22,6 +22,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size as UiSize
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -88,9 +90,12 @@ fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
     // база изображений ARCore задаётся в конфигурации сессии.
     val appContext = LocalContext.current.applicationContext
     var referencesResult by remember { mutableStateOf<StandReferencesResult?>(null) }
+    var capturedReferences by remember { mutableStateOf<List<StandReference>>(emptyList()) }
     LaunchedEffect(Unit) {
+        // Сначала снятые на телефоне, потом серверные: сцена создаётся, когда готово всё.
+        capturedReferences = withContext(Dispatchers.IO) { CapturedReferenceStore.loadAll(appContext) }
         referencesResult = withTimeoutOrNull(45_000) { StandReferenceRepository.load(appContext) }
-            ?: StandReferencesResult.Failed("нет ответа сервера за 30 с")
+            ?: StandReferencesResult.Failed("нет ответа сервера за 45 с")
     }
     val loaded = referencesResult
     if (loaded == null) {
@@ -104,14 +109,15 @@ fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
         }
         return
     }
-    val references = (loaded as? StandReferencesResult.Loaded)?.references ?: emptyList()
+    // Серверные (или из копии) + снятые на телефоне кнопкой «Снять эталон».
+    val references = ((loaded as? StandReferencesResult.Loaded)?.references ?: emptyList()) + capturedReferences
     val referencesLoadText = when (loaded) {
         is StandReferencesResult.Loaded ->
             (if (loaded.fromCache) "Эталоны ИЗ КОПИИ на телефоне: ${loaded.references.size} · сервер недоступен: ${loaded.networkError}"
             else "Эталоны с сервера: ${loaded.references.size}") +
                 if (loaded.failed.isEmpty()) "" else " · не загрузились: ${loaded.failed.joinToString()}"
         is StandReferencesResult.Failed -> "Эталоны с сервера: ОШИБКА (${loaded.reason})"
-    }
+    } + if (capturedReferences.isEmpty()) "" else " · снятых на телефоне: ${capturedReferences.size}"
 
     var playbackUri by remember { mutableStateOf<Uri?>(null) }
     val pickRecording = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -150,17 +156,21 @@ private fun StandScene(
     val cubeMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFFFF9800))
     }
-    // Полупрозрачная «пластина» поверх распознанного фрагмента фасада: видно, насколько точно
-    // ARCore совместил эталон с реальным зданием.
-    val plateMaterial = remember(materialLoader) {
-        materialLoader.createUnlitColorInstance(Color(0xFF00E5FF).copy(alpha = 0.35f))
+    // Контур (рамка + крест в центре) поверх распознанного фрагмента фасада: по краям сразу видно,
+    // насколько точно ARCore совместил эталон с реальным зданием.
+    val outlineMaterial = remember(materialLoader) {
+        materialLoader.createUnlitColorInstance(Color(0xFF00E5FF))
     }
-    // Ожидаемый размер каждой пластины (ширина из манифеста, высота по пропорциям снимка).
-    val plateSizes = remember(references) {
-        references.associate { r ->
-            r.name to Size(r.widthMeters, 0.02f, r.widthMeters * r.bitmap.height / r.bitmap.width)
+    // Размер каждого эталона (ширина из манифеста или из съёмки, высота по пропорциям снимка).
+    val plateSizes = remember {
+        mutableStateMapOf<String, Size>().apply {
+            references.forEach { r ->
+                put(r.name, Size(r.widthMeters, 0.02f, r.widthMeters * r.bitmap.height / r.bitmap.width))
+            }
         }
     }
+    val scope = rememberCoroutineScope()
+    val captureRequested = remember { BooleanArray(1) }
 
     // ── Что умеет устройство (заполняется один раз при создании сессии) ──
     var depthSupportText by remember { mutableStateOf("Глубина: проверяю…") }
@@ -374,6 +384,49 @@ private fun StandScene(
                     }
                 }
 
+                // «Снять эталон»: кадр доступен только здесь, внутри обновления.
+                if (captureRequested[0]) {
+                    captureRequested[0] = false
+                    val name = "cap_" + stamp("HHmmss")
+                    when (val r = captureReference(frame, viewW, viewH, trackedImages.toList(), name)) {
+                        is CaptureResult.Failed -> {
+                            message = "Эталон не снят: ${r.reason}"
+                            Log.i(TAG, "СЪЁМКА ЭТАЛОНА: отказ — ${r.reason}")
+                        }
+                        is CaptureResult.Ok -> scope.launch {
+                            val ref = r.reference
+                            // В базу ARCore текущей сессии — сразу, без перезахода.
+                            val added = try {
+                                val config = session.config
+                                val db = config.augmentedImageDatabase?.takeIf { it.numImages > 0 }
+                                    ?: AugmentedImageDatabase(session)
+                                db.addImage(ref.name, ref.bitmap, ref.widthMeters)
+                                config.augmentedImageDatabase = db
+                                session.configure(config)
+                                null
+                            } catch (e: Exception) {
+                                e.javaClass.simpleName
+                            }
+                            if (added != null) {
+                                message = "ARCore не принял снимок ($added) — выбери место с вывеской или деталями"
+                                Log.i(TAG, "СЪЁМКА ЭТАЛОНА: ARCore отклонил ${ref.name}: $added")
+                                return@launch
+                            }
+                            plateSizes[ref.name] = Size(
+                                ref.widthMeters, 0.02f, ref.widthMeters * ref.bitmap.height / ref.bitmap.width
+                            )
+                            val path = withContext(Dispatchers.IO) { CapturedReferenceStore.save(context, ref) }
+                            val line = stamp("HH:mm:ss") + " | СНЯТ ЭТАЛОН «${ref.name}»: ширина %.2f м, расстояние %.1f м (%s), %d×%d px"
+                                .format(ref.widthMeters, ref.distanceMeters, ref.distanceSource, ref.bitmap.width, ref.bitmap.height)
+                            journal.add(line)
+                            Log.i(TAG, line)
+                            imagesDbText = "$imagesDbText, ${ref.name}"
+                            message = "Эталон «${ref.name}» снят: %.1f м шириной (%s)".format(ref.widthMeters, ref.distanceSource) +
+                                (path?.let { " · копия: $it" } ?: "")
+                        }
+                    }
+                }
+
                 frameCounter[0]++
                 if (frameCounter[0] % PROBE_EVERY_N_FRAMES == 0) {
                     imagesLine = if (trackedImages.isEmpty()) "" else "Фасад: " + trackedImages.joinToString(" · ") { img ->
@@ -417,13 +470,29 @@ private fun StandScene(
             },
             content = {
                 trackedImages.forEach { img ->
-                    val plateSize = plateSizes[img.name] ?: Size(img.extentX, 0.02f, img.extentZ)
+                    val sz = plateSizes[img.name] ?: Size(img.extentX, 0.02f, img.extentZ)
                     AugmentedImageNode(augmentedImage = img) {
-                        CubeNode(
-                            size = plateSize,
-                            materialInstance = plateMaterial,
-                            apply = { plateNodes[img.name] = this }
+                        // Плоскость эталона в ARCore: X — вправо, Z — вниз, Y — от фасада к нам.
+                        val w = sz.x
+                        val h = sz.z
+                        val t = maxOf(0.03f, w * 0.006f) // толщина линий
+                        val cross = w * 0.08f
+                        val bars = listOf(
+                            Size(w, 0.02f, t) to Position(0f, 0f, -h / 2),  // верх
+                            Size(w, 0.02f, t) to Position(0f, 0f, h / 2),   // низ
+                            Size(t, 0.02f, h) to Position(-w / 2, 0f, 0f),  // лево
+                            Size(t, 0.02f, h) to Position(w / 2, 0f, 0f),   // право
+                            Size(cross, 0.02f, t) to Position(0f, 0f, 0f),  // крест —
+                            Size(t, 0.02f, cross) to Position(0f, 0f, 0f)   // крест |
                         )
+                        bars.forEachIndexed { i, (size, pos) ->
+                            CubeNode(
+                                size = size,
+                                materialInstance = outlineMaterial,
+                                position = pos,
+                                apply = { plateNodes["${img.name}#$i"] = this }
+                            )
+                        }
                     }
                 }
                 cubePosition?.let { pos ->
@@ -445,6 +514,17 @@ private fun StandScene(
             val r = size.width / 2f
             drawLine(Color.White, Offset(c.x - r, c.y), Offset(c.x + r, c.y), strokeWidth = 3f)
             drawLine(Color.White, Offset(c.x, c.y - r), Offset(c.x, c.y + r), strokeWidth = 3f)
+        }
+
+        // Рамка «Снять эталон»: ровно эта область кадра станет эталоном.
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val side = size.width * CAPTURE_GUIDE_FRACTION
+            drawRect(
+                color = Color.White.copy(alpha = 0.45f),
+                topLeft = Offset((size.width - side) / 2f, (size.height - side) / 2f),
+                size = UiSize(side, side),
+                style = Stroke(width = 3f)
+            )
         }
 
         // Верх: назад + панель замеров.
@@ -518,6 +598,16 @@ private fun StandScene(
                         message = "Куб 50 см поставлен в 3 м перед камерой"
                     }
                 }) { Text("Куб 3 м") }
+
+                FilledTonalButton(onClick = {
+                    captureRequested[0] = true
+                    message = "Снимаю эталон…"
+                }) { Text("📷 Снять эталон") }
+
+                FilledTonalButton(onClick = {
+                    val n = CapturedReferenceStore.clear(context)
+                    message = "Удалено снятых эталонов: $n. Из текущей сессии уйдут после перезахода в стенд"
+                }) { Text("Удалить снятые") }
 
                 FilledTonalButton(onClick = { depthOcclusionOn = !depthOcclusionOn }) {
                     Text("Глубина: " + if (depthOcclusionOn) "ВКЛ" else "выкл")
