@@ -398,7 +398,7 @@ private fun StandScene(
                             // В базу ARCore текущей сессии — сразу, без перезахода.
                             val added = try {
                                 val config = session.config
-                                val db = config.augmentedImageDatabase?.takeIf { it.numImages > 0 }
+                                val db = config.augmentedImageDatabase.takeIf { it.numImages > 0 }
                                     ?: AugmentedImageDatabase(session)
                                 db.addImage(ref.name, ref.bitmap, ref.widthMeters)
                                 config.augmentedImageDatabase = db
