@@ -60,7 +60,7 @@ internal object StandReferenceRepository {
     suspend fun load(context: Context): StandReferencesResult = withContext(Dispatchers.IO) {
         val base = "${ArWorldServerConfig.BASE_URL}$STAND_REFERENCES_DIR"
         val cache = cacheDir(context)
-        val networkError: String
+        var networkError = ""
         try {
             val manifestBytes = download("$base/$MANIFEST")
             val manifest = json.decodeFromString(StandManifest.serializer(), String(manifestBytes, Charsets.UTF_8))
