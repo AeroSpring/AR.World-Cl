@@ -167,6 +167,7 @@ private fun StandScene(
     var semanticSupportText by remember { mutableStateOf("Семантика: проверяю…") }
     var geoSupportText by remember { mutableStateOf("Geospatial: проверяю…") }
     var imagesDbText by remember { mutableStateOf(referencesLoadText) }
+    var cameraConfigText by remember { mutableStateOf("Камера: …") }
     var sessionError by remember { mutableStateOf<String?>(null) }
 
     // ── Живые замеры ──
@@ -233,6 +234,7 @@ private fun StandScene(
     fun allLines(): List<String> = listOfNotNull(
         if (isPlayback) "РЕЖИМ: воспроизведение записи" else null,
         trackingLine,
+        cameraConfigText,
         trackingFailure?.let { "Причина: $it" },
         imagesDbText, imagesLine.ifEmpty { if (references.isEmpty()) null else "Фасад: ищу…" },
         depthSupportText, depthLine.ifEmpty { null },
@@ -330,7 +332,13 @@ private fun StandScene(
                     imagesDbText = "Эталоны в базе ARCore: ${added.joinToString().ifEmpty { "нет" }}" +
                         if (rejected.isEmpty()) "" else " · отклонены: ${rejected.joinToString()}"
                 }
-                Log.i(TAG, "Сессия: $depthSupportText | $semanticSupportText | $geoSupportText | $imagesDbText")
+                cameraConfigText = try {
+                    val c = session.cameraConfig
+                    "Камера: CPU-кадр ${c.imageSize.width}×${c.imageSize.height} · текстура ${c.textureSize.width}×${c.textureSize.height}"
+                } catch (e: Exception) {
+                    "Камера: ? (${e.javaClass.simpleName})"
+                }
+                Log.i(TAG, "Сессия: $cameraConfigText | $depthSupportText | $semanticSupportText | $geoSupportText | $imagesDbText")
             },
             onSessionFailed = { e ->
                 sessionError = "Ошибка сессии: ${e.javaClass.simpleName}: ${e.message}"
