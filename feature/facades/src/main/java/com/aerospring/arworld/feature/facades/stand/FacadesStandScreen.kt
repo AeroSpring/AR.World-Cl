@@ -86,9 +86,10 @@ private fun stamp(pattern: String) = SimpleDateFormat(pattern, Locale.US).format
 fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
     // Эталонные снимки фасада грузятся с сервера ДО создания AR-сессии:
     // база изображений ARCore задаётся в конфигурации сессии.
+    val appContext = LocalContext.current.applicationContext
     var referencesResult by remember { mutableStateOf<StandReferencesResult?>(null) }
     LaunchedEffect(Unit) {
-        referencesResult = withTimeoutOrNull(30_000) { StandReferenceRepository.load() }
+        referencesResult = withTimeoutOrNull(45_000) { StandReferenceRepository.load(appContext) }
             ?: StandReferencesResult.Failed("нет ответа сервера за 30 с")
     }
     val loaded = referencesResult
@@ -105,8 +106,10 @@ fun FacadesStandScreen(locationGranted: Boolean, onExit: () -> Unit) {
     }
     val references = (loaded as? StandReferencesResult.Loaded)?.references ?: emptyList()
     val referencesLoadText = when (loaded) {
-        is StandReferencesResult.Loaded -> "Эталоны с сервера: ${loaded.references.size}" +
-            if (loaded.failed.isEmpty()) "" else " · не загрузились: ${loaded.failed.joinToString()}"
+        is StandReferencesResult.Loaded ->
+            (if (loaded.fromCache) "Эталоны ИЗ КОПИИ на телефоне: ${loaded.references.size} · сервер недоступен: ${loaded.networkError}"
+            else "Эталоны с сервера: ${loaded.references.size}") +
+                if (loaded.failed.isEmpty()) "" else " · не загрузились: ${loaded.failed.joinToString()}"
         is StandReferencesResult.Failed -> "Эталоны с сервера: ОШИБКА (${loaded.reason})"
     }
 
@@ -545,7 +548,7 @@ private fun StandScene(
                         } else {
                             val dir = context.getExternalFilesDir("facades-recordings")
                             val file = File(dir, "facade_${stamp("yyyyMMdd_HHmmss")}.mp4")
-                            val ok = recorder.start(file)
+                            val ok = recorder.start(file, recordingRotation = portraitRecordingRotation(context))
                             message = if (ok) "Идёт запись сессии" else "Запись не началась: ${recorder.errorMessage ?: "?"}"
                         }
                     }) {
@@ -580,4 +583,42 @@ private fun distanceMeters(a: Pose, b: Pose): Float {
     val dy = a.ty() - b.ty()
     val dz = a.tz() - b.tz()
     return kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+}
+
+/**
+ * Поворот для записи сессии, чтобы MP4 в обычном плеере был вертикальным, как держали телефон.
+ * Датчик камеры «лежит» (обычно 90°), экран повёрнут на свой угол; разница — нужный поворот.
+ * ARRecorder принимает константу Surface.ROTATION_* и сам переводит её в градусы.
+ * На воспроизведение в стенде не влияет: это только пометка поворота для плееров.
+ */
+private fun portraitRecordingRotation(context: android.content.Context): Int {
+    val sensorDegrees = try {
+        val manager = context.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        manager.cameraIdList.firstNotNullOfOrNull { id ->
+            val ch = manager.getCameraCharacteristics(id)
+            if (ch.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) ==
+                android.hardware.camera2.CameraCharacteristics.LENS_FACING_BACK
+            ) ch.get(android.hardware.camera2.CameraCharacteristics.SENSOR_ORIENTATION) else null
+        } ?: 90
+    } catch (e: Exception) {
+        90
+    }
+    @Suppress("DEPRECATION")
+    val displayRotation = try {
+        (context.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager).defaultDisplay.rotation
+    } catch (e: Exception) {
+        android.view.Surface.ROTATION_0
+    }
+    val displayDegrees = when (displayRotation) {
+        android.view.Surface.ROTATION_90 -> 90
+        android.view.Surface.ROTATION_180 -> 180
+        android.view.Surface.ROTATION_270 -> 270
+        else -> 0
+    }
+    return when ((sensorDegrees - displayDegrees + 360) % 360) {
+        90 -> android.view.Surface.ROTATION_90
+        180 -> android.view.Surface.ROTATION_180
+        270 -> android.view.Surface.ROTATION_270
+        else -> android.view.Surface.ROTATION_0
+    }
 }

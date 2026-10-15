@@ -119,7 +119,8 @@ internal fun probeEarth(session: Session): Pair<String, GeoFix?> {
 
     val state = earth.earthState
     if (state != Earth.EarthState.ENABLED) {
-        return "Geospatial: ошибка $state" to null
+        val hint = if (state == Earth.EarthState.ERROR_INTERNAL) " (часто: нет интернета)" else ""
+        return "Geospatial: ошибка $state$hint" to null
     }
     if (earth.trackingState != TrackingState.TRACKING) {
         return "Geospatial: ищу позицию (${earth.trackingState})" to null
