@@ -182,13 +182,13 @@ private fun ContactFooter() {
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
             ) {
                 Text(
-                    text = "Aero.Spring@yandex.ru",
+                    text = "info@ar-to-business.ru",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable {
                         val intent = Intent(Intent.ACTION_SENDTO).apply {
-                            data = Uri.parse("mailto:Aero.Spring@yandex.ru")
+                            data = Uri.parse("mailto:info@ar-to-business.ru")
                         }
                         context.startActivity(intent)
                     }
