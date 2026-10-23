@@ -2314,6 +2314,24 @@ fun FurnitureSceneScreen(
                         }) {
                             Text("Хочу такую · ${selectedShowcaseModel.code}")
                         }
+                        // Маркировка рекламы Витрины компании: «Реклама · … · erid».
+                        guestShowcase?.company(selectedShowcaseModel.companyId)?.ad?.line?.let { adLine ->
+                            Spacer(Modifier.height(6.dp))
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                Text(adLine, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                    guestShowcase?.testBanner?.let { banner ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            banner,
+                            color = androidx.compose.ui.graphics.Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier
+                                .background(androidx.compose.ui.graphics.Color(0xFFDD0000), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
                     }
                 }
             }

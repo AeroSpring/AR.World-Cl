@@ -41,8 +41,20 @@ import com.aerospring.arworld.feature.whereanythingis.ui.TopControlPanel
 import com.aerospring.arworld.feature.whereanythingis.ui.radiusKmToSliderPosition
 import com.aerospring.arworld.core.data.repository.PoiFetchResult
 import com.aerospring.arworld.core.data.repository.RemotePoiRepository
+import com.aerospring.arworld.core.data.repository.AdStatsReporter
+import androidx.compose.foundation.background
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.aerospring.arworld.core.data.geo.GeoMath
 import com.aerospring.arworld.feature.whereanythingis.ui.sliderPositionToRadiusKm
+
+/** Раздел для маркировки рекламы и обезличенных счётчиков (POST /ads/events). */
+private const val AD_SECTION = "poi"
 
 /** Ключ раздела для запоминания "справка уже показана". */
 private const val HELP_SECTION_KEY = "where_anything_is"
@@ -219,11 +231,30 @@ fun WhereAnythingIsScreen(
                     }
                 }
 
+                // Обезличенные счётчики для отчётности о рекламе: показ = объект попал в выбранный
+                // радиус и категории (отрисован в сцене); повтор в этой сессии не считается.
+                val adStats = remember { AdStatsReporter.forSection(AD_SECTION) }
+                LaunchedEffect(visibleMarkers) {
+                    visibleMarkers.forEach { adStats.impression(it.poi.id, it.poi.ad?.erid) }
+                }
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        delay(60_000)
+                        adStats.flush()
+                    }
+                }
+                DisposableEffect(Unit) {
+                    // Своя короткая область: область экрана при уходе с него уже отменена.
+                    onDispose { CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { adStats.flush() } }
+                }
+
                 ArCameraView(
                     visibleMarkers = visibleMarkers,
                     onMarkerClick = { marker ->
                         // Повторный тап по тому же маркеру — скрыть карточку; по другому — заменить.
-                        selectedMarker = if (selectedMarker?.poi?.id == marker.poi.id) null else marker
+                        val opening = selectedMarker?.poi?.id != marker.poi.id
+                        selectedMarker = if (opening) marker else null
+                        if (opening) adStats.cardOpen(marker.poi.id, marker.poi.ad?.erid)
                     },
                     onBackgroundClick = { selectedMarker = null },
                     onSessionCreated = { arSessionCreated = true },
@@ -235,7 +266,22 @@ fun WhereAnythingIsScreen(
                         marker = marker,
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .padding(16.dp)
+                            .padding(16.dp),
+                        onAction = { adStats.action(marker.poi.id, marker.poi.ad?.erid) }
+                    )
+                }
+
+                // Раздел в тестовом режиме маркировки — заметная плашка, чтобы не перепутать с боевым.
+                (poiFetchResult as? PoiFetchResult.Success)?.testBanner?.let { banner ->
+                    Text(
+                        text = banner,
+                        color = Color.White,
+                        style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 4.dp)
+                            .background(Color(0xFFDD0000), androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
 

@@ -78,6 +78,13 @@ fun FurnitureContactDialog(
                     Text("Контакты компании сейчас недоступны", color = MaterialTheme.colorScheme.error)
                 } else {
                     Text(company.name, style = MaterialTheme.typography.titleSmall)
+                    // Маркировка рекламы Витрины компании (можно выделить и скопировать).
+                    company.ad?.line?.let { adLine ->
+                        androidx.compose.foundation.text.selection.SelectionContainer {
+                            Text(adLine, style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                     Spacer(Modifier.height(4.dp))
                     for ((key, label) in CONTACT_LABELS) {
                         val value = company.contacts[key]?.trim().orEmpty()
