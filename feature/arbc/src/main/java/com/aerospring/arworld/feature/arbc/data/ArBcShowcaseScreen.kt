@@ -24,7 +24,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +35,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.aerospring.arworld.core.data.repository.AdStatsReporter
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import coil.compose.AsyncImage
 import com.aerospring.arworld.feature.arbc.data.ArBcShowcaseFetchResult
 import com.aerospring.arworld.feature.arbc.data.ArBcShowcaseRepository
@@ -53,11 +62,23 @@ fun ArBcShowcaseScreen(
     var clients by remember { mutableStateOf<List<ShowcaseClient>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var testBanner by remember { mutableStateOf<String?>(null) }
+
+    // Обезличенные счётчики для отчётности о рекламе: показ = карточка визитки в Витрине,
+    // открытие = переход из Витрины в сцену. Повтор в этой сессии не считается.
+    val adStats = remember { AdStatsReporter.forSection(ARBC_AD_SECTION) }
+    LaunchedEffect(clients) {
+        clients.forEach { adStats.impression(it.clientId, it.ad?.erid) }
+    }
+    DisposableEffect(Unit) {
+        onDispose { CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { adStats.flush() } }
+    }
 
     LaunchedEffect(Unit) {
         when (val result = ArBcShowcaseRepository.fetchShowcase()) {
             is ArBcShowcaseFetchResult.Success -> {
                 clients = result.clients
+                testBanner = result.testBanner
                 isLoading = false
             }
             is ArBcShowcaseFetchResult.Error -> {
@@ -112,9 +133,16 @@ fun ArBcShowcaseScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(clients) { client ->
-                        ShowcaseCard(client = client, onClick = { onClientSelected(client.clientId) })
+                        ShowcaseCard(client = client, onClick = {
+                            adStats.cardOpen(client.clientId, client.ad?.erid)
+                            onClientSelected(client.clientId)
+                        })
                     }
                 }
+            }
+
+            testBanner?.let { banner ->
+                AdTestBanner(text = banner, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp))
             }
         }
     }
@@ -156,5 +184,32 @@ private fun ShowcaseCard(client: ShowcaseClient, onClick: () -> Unit) {
             modifier = Modifier.padding(top = 8.dp),
             maxLines = 1
         )
+        // Маркировка рекламы: «Реклама · рекламодатель, ИНН · erid» (можно выделить и скопировать).
+        client.ad?.line?.let { adLine ->
+            SelectionContainer {
+                Text(
+                    text = adLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
     }
+}
+
+/** Раздел AR.Визитки для маркировки рекламы и счётчиков (POST /ads/events). */
+internal const val ARBC_AD_SECTION = "arbc"
+
+/** Красная плашка режима test маркировки — чтобы не перепутать с боевым. */
+@Composable
+internal fun AdTestBanner(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        color = Color.White,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = modifier
+            .background(Color(0xFFDD0000), RoundedCornerShape(6.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    )
 }

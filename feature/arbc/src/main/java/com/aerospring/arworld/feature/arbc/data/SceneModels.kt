@@ -1,6 +1,7 @@
 package com.aerospring.arworld.feature.arbc.data
 
 import kotlinx.serialization.SerialName
+import com.aerospring.arworld.core.data.model.AdMarking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonClassDiscriminator
@@ -21,7 +22,9 @@ data class ArBcScene(
     val sceneId: String,
     val schemaVersion: Int,
     val clientName: String,
-    val models: List<SceneModel> = emptyList()
+    val models: List<SceneModel> = emptyList(),
+    /** Маркировка рекламы от сервера (пока визитка в Витрине AR.Мир). null — строки нет. */
+    val ad: AdMarking? = null
 )
 
 @Serializable
@@ -120,10 +123,15 @@ data class ArBcAiChatResponse(val reply: String)
 data class ShowcaseClient(
     val clientId: String,
     val clientName: String,
-    val previewUrl: String? = null
+    val previewUrl: String? = null,
+    /** Маркировка рекламы: строка «Реклама · … · erid» под карточкой. */
+    val ad: AdMarking? = null
 )
 
 @Serializable
 data class ShowcaseResponse(
-    val clients: List<ShowcaseClient> = emptyList()
+    val clients: List<ShowcaseClient> = emptyList(),
+    val adMode: String = "on",
+    /** Не null — раздел в тестовом режиме маркировки: красная плашка. */
+    val testBanner: String? = null
 )

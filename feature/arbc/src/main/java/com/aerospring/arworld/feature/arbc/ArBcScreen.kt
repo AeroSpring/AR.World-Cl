@@ -12,7 +12,10 @@ import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -37,6 +40,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.MaterialTheme
+import com.aerospring.arworld.core.data.repository.AdStatsReporter
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -168,6 +177,12 @@ fun ArBcScreen(
                         val scene: ArBcScene = result.scene
                         val context = LocalContext.current
                         val coroutineScope = rememberCoroutineScope()
+
+                        // Счётчик действий для отчётности о рекламе (только если визитка размечена).
+                        val adStats = remember { AdStatsReporter.forSection(ARBC_AD_SECTION) }
+                        DisposableEffect(Unit) {
+                            onDispose { CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { adStats.flush() } }
+                        }
 
                         // Вся переписка с ИИ-помощником за время нахождения на этом экране.
                         // Живёт до выхода со сцены — специально НЕ сбрасывается между
@@ -315,6 +330,9 @@ fun ArBcScreen(
                         ArBcSceneView(
                             scene = scene,
                             onInteraction = { interaction ->
+                                if (scene.ad != null && interaction != Interaction.Unknown) {
+                                    adStats.action(clientId, scene.ad.erid)
+                                }
                                 when (interaction) {
                                     is Interaction.OpenUrl -> {
                                         try {
@@ -353,6 +371,31 @@ fun ArBcScreen(
                             onSessionCreated = { },
                             modifier = Modifier.fillMaxSize()
                         )
+
+                        // Маркировка рекламы: пока визитка в Витрине AR.Мир, строка видна поверх сцены
+                        // (в том числе при входе по QR). Текст можно выделить и скопировать.
+                        scene.ad?.line?.let { adLine ->
+                            SelectionContainer(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
+                            ) {
+                                Text(
+                                    text = adLine,
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier
+                                        .background(Color(0x99000000), RoundedCornerShape(6.dp))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        scene.ad?.testBanner?.let { banner ->
+                            AdTestBanner(
+                                text = banner,
+                                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                            )
+                        }
 
                         if (chatDialogOpen) {
                             ArBcAiChatDialog(

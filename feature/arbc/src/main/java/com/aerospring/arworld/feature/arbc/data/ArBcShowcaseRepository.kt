@@ -6,7 +6,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 sealed class ArBcShowcaseFetchResult {
-    data class Success(val clients: List<ShowcaseClient>) : ArBcShowcaseFetchResult()
+    /** [testBanner] не null — раздел в тестовом режиме маркировки рекламы. */
+    data class Success(val clients: List<ShowcaseClient>, val testBanner: String? = null) : ArBcShowcaseFetchResult()
     data class Error(val message: String) : ArBcShowcaseFetchResult()
 }
 
@@ -41,7 +42,7 @@ object ArBcShowcaseRepository {
                 )
             }
 
-            ArBcShowcaseFetchResult.Success(response.clients)
+            ArBcShowcaseFetchResult.Success(response.clients, response.testBanner)
         } catch (e: Exception) {
             ArBcShowcaseFetchResult.Error(e.message ?: "Ошибка загрузки витрины")
         }
