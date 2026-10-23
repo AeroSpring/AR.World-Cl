@@ -1,5 +1,6 @@
 package com.aerospring.arworld.feature.furniture.data
 
+import com.aerospring.arworld.core.data.model.AdMarking
 import com.aerospring.arworld.core.data.network.ArWorldServerConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,6 +24,8 @@ data class ShowcaseCompany(
     val companyId: String,
     val name: String,
     val contacts: Map<String, String> = emptyMap(),
+    /** Маркировка рекламы: строка «Реклама · … · erid» для гостя. */
+    val ad: AdMarking? = null,
 )
 
 /** Модель витрины. Рабочего названия и контактов дизайнера тут нет и быть не может —
@@ -45,6 +48,8 @@ data class FurnitureShowcase(
     val types: List<ShowcaseType> = emptyList(),
     val companies: List<ShowcaseCompany> = emptyList(),
     val models: List<ShowcaseModel> = emptyList(),
+    /** Не null — Витрина в тестовом режиме маркировки рекламы: красная плашка. */
+    val testBanner: String? = null,
 ) {
     fun modelByCode(code: String): ShowcaseModel? = models.firstOrNull { it.code == code }
     fun company(id: String): ShowcaseCompany? = companies.firstOrNull { it.companyId == id }
