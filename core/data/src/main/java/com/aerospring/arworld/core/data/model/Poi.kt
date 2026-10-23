@@ -5,8 +5,8 @@ import kotlinx.serialization.Serializable
 
 /**
  * Точка интереса (POI) — маркер в AR-пространстве.
- * Схема соответствует JSON-файлу на сервере администратора проекта
- * (https://autoknowledge.tech/models/poiDatabase.json).
+ * Схема соответствует объекту из GET https://autoknowledge.tech/poi/objects
+ * (те же поля, что были в прежнем poiDatabase.json, плюс блок маркировки `ad`).
  */
 @Serializable
 data class Poi(
@@ -28,5 +28,7 @@ data class Poi(
     /** Дополнительный подъём модели над стандартной высотой (в метрах). Позволяет заказчику
      * разместить очень крупную модель, не перекрывая соседние объекты — луч всё равно будет
      * честно указывать вниз, на истинное место. По умолчанию 0 — обычная высота, как у всех. */
-    val modelExceeding: Double = 0.0
+    val modelExceeding: Double = 0.0,
+    /** Маркировка рекламы от сервера. null — строку «Реклама» не показывать. */
+    val ad: AdMarking? = null
 )

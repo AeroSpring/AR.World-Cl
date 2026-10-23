@@ -18,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.feature.whereanythingis.ar.VisibleMarker
@@ -29,7 +30,9 @@ import com.aerospring.arworld.feature.whereanythingis.ar.VisibleMarker
 @Composable
 fun MarkerInfoCard(
     marker: VisibleMarker,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Нажата кнопка «Маршрут», «Позвонить» или «На сайт» — для обезличенной статистики. */
+    onAction: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -66,7 +69,7 @@ fun MarkerInfoCard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    onClick = { openNavigationTo(context, marker.poi.latitude, marker.poi.longitude) },
+                    onClick = { onAction(); openNavigationTo(context, marker.poi.latitude, marker.poi.longitude) },
                     modifier = Modifier.weight(1f)
                 ) {
                     Text("Маршрут")
@@ -75,7 +78,7 @@ fun MarkerInfoCard(
                 val phone = marker.poi.phone
                 if (phone != null) {
                     Button(
-                        onClick = { openPhoneCall(context, phone) },
+                        onClick = { onAction(); openPhoneCall(context, phone) },
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(
@@ -88,11 +91,23 @@ fun MarkerInfoCard(
                 val siteUrl = marker.poi.siteUrl
                 if (siteUrl != null) {
                     Button(
-                        onClick = { openSite(context, siteUrl) },
+                        onClick = { onAction(); openSite(context, siteUrl) },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("На сайт")
                     }
+                }
+            }
+
+            // Маркировка рекламы: «Реклама · рекламодатель, ИНН · erid» — текст можно выделить и скопировать.
+            marker.poi.ad?.line?.let { adLine ->
+                SelectionContainer {
+                    Text(
+                        text = adLine,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
                 }
             }
         }
