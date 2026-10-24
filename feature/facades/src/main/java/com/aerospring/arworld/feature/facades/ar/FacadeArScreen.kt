@@ -556,6 +556,8 @@ private fun FacadeArContent(
             FacadeCardDialog(
                 card = oc.card,
                 file = store.localFile(pkg.facadeId, oc.card.assetUrl),
+                engine = engine,
+                modelLoader = modelLoader,
                 ad = oc.card.ad ?: scene?.ad,
                 otherActions = oc.others,
                 // Действия из карточки учитываются на карточке (её erid).

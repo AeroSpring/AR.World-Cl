@@ -43,6 +43,8 @@ internal sealed class FacadeAction(open val label: String?) {
         val assetId: String,
         val assetUrl: String,
         val title: String?,
+        /** Название модели-карточки в студии — заголовок, если свой не задан. */
+        val assetTitle: String?,
         val text: String?,
         /** erid карточки; null — у карточки нет своего креатива, действует erid сцены. */
         val erid: String?,
@@ -57,7 +59,7 @@ internal sealed class FacadeAction(open val label: String?) {
             is Call -> "Позвонить"
             is Email -> "Написать письмо"
             is Ai -> "Спросить помощника"
-            is Detail -> title?.takeIf { it.isNotBlank() }?.let { "Подробно: $it" } ?: "Посмотреть подробно"
+            is Detail -> (title?.takeIf { it.isNotBlank() } ?: assetTitle)?.let { "Подробно: $it" } ?: "Посмотреть подробно"
         }
 
     val icon: ImageVector
@@ -86,7 +88,7 @@ internal fun parseActions(list: List<JsonObject>, aiEnabled: Boolean): List<Faca
             val url = o.str("assetUrl")
             if (id == null || url == null) null
             else FacadeAction.Detail(
-                id, url, o.str("title"), o.str("text"), o.str("erid"),
+                id, url, o.str("title"), o.str("assetTitle"), o.str("text"), o.str("erid"),
                 o["ad"]?.let { runCatching { facadesJson.decodeFromJsonElement(AdMarking.serializer(), it) }.getOrNull() },
                 label
             )

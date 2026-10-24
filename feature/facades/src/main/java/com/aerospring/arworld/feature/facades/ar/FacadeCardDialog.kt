@@ -41,8 +41,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.aerospring.arworld.core.data.model.AdMarking
 import io.github.sceneview.SceneView
 import io.github.sceneview.model.ModelInstance
-import io.github.sceneview.rememberEngine
-import io.github.sceneview.rememberModelLoader
+import com.google.android.filament.Engine
+import io.github.sceneview.loaders.ModelLoader
 import java.io.File
 
 /**
@@ -55,6 +55,9 @@ import java.io.File
 internal fun FacadeCardDialog(
     card: FacadeAction.Detail,
     file: File,
+    /** Движок и загрузчик AR-экрана: второй свой движок при закрытии карточки «гасил» камеру AR. */
+    engine: Engine,
+    modelLoader: ModelLoader,
     ad: AdMarking?,
     otherActions: List<FacadeAction>,
     onAction: (FacadeAction) -> Unit,
@@ -65,14 +68,14 @@ internal fun FacadeCardDialog(
             Scaffold(
                 topBar = {
                     TopAppBar(
-                        title = { Text(card.title?.takeIf { it.isNotBlank() } ?: "Подробно") },
+                        title = { Text(card.title?.takeIf { it.isNotBlank() } ?: card.assetTitle?.takeIf { it.isNotBlank() } ?: "Подробно") },
                         actions = { IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = "Закрыть") } }
                     )
                 }
             ) { inner ->
                 Column(Modifier.fillMaxSize().padding(inner)) {
                     Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF1E1F22))) {
-                        CardModel(file)
+                        CardModel(file, engine, modelLoader)
                     }
                     Column(
                         Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())
@@ -100,9 +103,7 @@ internal fun FacadeCardDialog(
 }
 
 @Composable
-private fun CardModel(file: File) {
-    val engine = rememberEngine()
-    val modelLoader = rememberModelLoader(engine)
+private fun CardModel(file: File, engine: Engine, modelLoader: ModelLoader) {
     var instance by remember(file) { mutableStateOf<ModelInstance?>(null) }
     var failed by remember(file) { mutableStateOf(false) }
     LaunchedEffect(file) {
