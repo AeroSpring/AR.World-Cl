@@ -17,6 +17,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Info
+import com.aerospring.arworld.core.ui.component.SectionHelpDialog
+import com.aerospring.arworld.core.ui.component.SectionHelpPrefs
+import com.aerospring.arworld.feature.facades.FACADES_HELP_KEY
+import com.aerospring.arworld.feature.facades.facadesHelpItems
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -114,6 +119,14 @@ internal fun FacadesHomeScreen(
     val downloadLock = remember { Mutex() }
     var installer by remember { mutableStateOf<InstallerSession?>(InstallerPrefs.load(context.applicationContext)) }
     var installerLogin by remember { mutableStateOf(false) }
+    // Справка «i»: сама — один раз при первом входе в раздел, дальше по кнопке.
+    var showHelp by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!SectionHelpPrefs.wasShown(context, FACADES_HELP_KEY)) {
+            showHelp = true
+            SectionHelpPrefs.markShown(context, FACADES_HELP_KEY)
+        }
+    }
 
     fun refreshCached() { cached = store.cachedPackages() }
 
@@ -200,8 +213,10 @@ internal fun FacadesHomeScreen(
                 },
                 actions = {
                     // Монтаж — для сотрудников и монтажников заказчика; прохожему кнопка не мешает.
+                    IconButton(onClick = { showHelp = true }) { Icon(Icons.Outlined.Info, contentDescription = "Справка") }
                     if (installer == null) TextButton(onClick = { installerLogin = true }) { Text("Монтаж") }
-                    TextButton(onClick = onOpenStand) { Text("Диагностика") }
+                    // Диагностика (стенд шага 1) — только монтажнику: прохожему она ни к чему.
+                    if (installer != null) TextButton(onClick = onOpenStand) { Text("Диагностика") }
                 }
             )
         }
@@ -246,6 +261,8 @@ internal fun FacadesHomeScreen(
             }
         }
     }
+
+    if (showHelp) SectionHelpDialog(title = "AR.Фасады", items = facadesHelpItems, onDismiss = { showHelp = false })
 
     if (installerLogin) {
         InstallerLoginDialog(onLoggedIn = { installer = it; installerLogin = false }, onDismiss = { installerLogin = false })

@@ -28,6 +28,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Info
+import com.aerospring.arworld.core.ui.component.SectionHelpDialog
+import com.aerospring.arworld.feature.facades.facadesHelpItems
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -387,6 +390,7 @@ private fun FacadeArContent(
     var chatTarget by remember { mutableStateOf<StatTarget?>(null) }
     val chatItems = remember { mutableStateListOf<ChatItem>() }   // история — только на телефоне
     var chatSending by remember { mutableStateOf(false) }
+    var showHelp by remember { mutableStateOf(false) }
 
     fun count(target: StatTarget, c: FacadeCounter) {
         scope.launch { FacadeStats.count(context, pkg.facadeId, target.objectId, target.erid, c) }
@@ -615,6 +619,7 @@ private fun FacadeArContent(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onExit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = Color.White) }
                 Text(pkg.title, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                IconButton(onClick = { showHelp = true }) { Icon(Icons.Outlined.Info, "Справка", tint = Color.White) }
             }
             pkg.ad.testBanner?.let {
                 Text(
@@ -716,6 +721,7 @@ private fun FacadeArContent(
                 onDismiss = { chatOpen = false }
             )
         }
+        if (showHelp) SectionHelpDialog(title = "AR.Фасады", items = facadesHelpItems, onDismiss = { showHelp = false })
         if (safetyDialog) InstallSafetyDialog(onOk = { InstallSafety.shown = true; safetyDialog = false })
         pending?.let { p ->
             CaptureConfirmDialog(
