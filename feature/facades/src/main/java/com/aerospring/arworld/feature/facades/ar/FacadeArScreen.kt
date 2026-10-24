@@ -38,9 +38,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -55,7 +57,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aerospring.arworld.core.data.model.AdMarking
 import com.aerospring.arworld.feature.facades.data.FacadePackage
+import com.aerospring.arworld.feature.facades.data.FacadeAiApi
+import com.aerospring.arworld.feature.facades.data.FacadeChatResult
+import com.aerospring.arworld.feature.facades.data.FacadeChatTurn
+import com.aerospring.arworld.feature.facades.data.FacadeCounter
 import com.aerospring.arworld.feature.facades.data.FacadeReference
+import com.aerospring.arworld.feature.facades.data.FacadeStats
 import com.aerospring.arworld.feature.facades.data.FacadeSceneModel
 import com.aerospring.arworld.feature.facades.data.FacadeStore
 import com.google.ar.core.Anchor
@@ -77,9 +84,11 @@ import io.github.sceneview.node.Node
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelLoader
+import io.github.sceneview.rememberOnGestureListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -95,6 +104,12 @@ private const val DARK_LUMA = 45
 
 /** Анимация по умолчанию у модели сцены: {index, mode: loop | once | none}. */
 private data class DefaultAnimation(val index: Int, val loop: Boolean)
+
+/** Куда относить счётчик: сцена (s_…) или карточка (a_…), и какой erid был показан. */
+private data class StatTarget(val objectId: String, val erid: String?)
+
+/** Открытая карточка: что открыто, где учитывать действия из неё и что ещё умеет модель. */
+private data class OpenCard(val card: FacadeAction.Detail, val target: StatTarget, val others: List<FacadeAction>)
 
 private fun FacadeSceneModel.animation(): DefaultAnimation? {
     // Не задано в студии — играем первую анимацию модели по кругу (если она в файле есть).
@@ -140,7 +155,8 @@ private fun sceneOriginFromImage(ref: FacadeReference?, pkg: FacadePackage): Pos
  *  4. Маска — невидимая: закрывает части сцены, которые оказались бы «за стеной».
  *  5. Строка «Реклама · … · erid» пока сцена на экране; в тестовом режиме — красная плашка.
  *
- * Касания моделей и счётчики — шаг 3.3.
+ * Шаг 3.3: касание модели → её действия (сайт, звонок, письмо, ИИ-помощник, карточка «подробно»);
+ * офлайн-счётчики (FacadeStats) — показ сцены, касания, действия, вопросы ИИ.
  */
 @Composable
 internal fun FacadeArScreen(facadeId: String, store: FacadeStore, onExit: () -> Unit) {
@@ -245,6 +261,68 @@ private fun FacadeArContent(
     val refsById = remember(refs) { refs.associate { it.first.id to it.first } }
     val hintReference = remember(refs) { pickHintReference(refs, FacadeSceneChooser.now(pkg).hour) }
 
+    // ── Касания, действия, счётчики (шаг 3.3) ──
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val modelNodes = remember { HashMap<Node, FacadeSceneModel>() }
+    var sheet by remember { mutableStateOf<List<FacadeAction>?>(null) }
+    var sheetTarget by remember { mutableStateOf<StatTarget?>(null) }
+    var openCard by remember { mutableStateOf<OpenCard?>(null) }
+    var chatOpen by remember { mutableStateOf(false) }
+    var chatTarget by remember { mutableStateOf<StatTarget?>(null) }
+    val chatItems = remember { mutableStateListOf<ChatItem>() }   // история — только на телефоне
+    var chatSending by remember { mutableStateOf(false) }
+
+    fun count(target: StatTarget, c: FacadeCounter) {
+        scope.launch { FacadeStats.count(context, pkg.facadeId, target.objectId, target.erid, c) }
+    }
+
+    fun perform(action: FacadeAction, target: StatTarget, modelActions: List<FacadeAction>) {
+        sheet = null
+        when (action) {
+            is FacadeAction.Detail -> {
+                val cardTarget = StatTarget(action.assetId, action.erid ?: scene?.erid)
+                count(cardTarget, FacadeCounter.CARD_OPEN)
+                openCard = OpenCard(action, cardTarget, modelActions.filter { it !is FacadeAction.Detail })
+            }
+            is FacadeAction.Ai -> { chatTarget = target; chatOpen = true }
+            else -> if (launchExternal(context, action)) action.counter()?.let { count(target, it) }
+        }
+    }
+
+    fun onModelTap(m: FacadeSceneModel) {
+        val s = scene ?: return
+        val target = StatTarget(s.id, s.erid)
+        count(target, FacadeCounter.MODEL_TAP)
+        val actions = parseActions(m.interactions, pkg.ai.enabled)
+        when (actions.size) {
+            0 -> Unit
+            1 -> perform(actions[0], target, actions)
+            else -> { sheetTarget = target; sheet = actions }
+        }
+    }
+
+    fun sendToAi(text: String) {
+        val target = chatTarget ?: scene?.let { StatTarget(it.id, it.erid) } ?: return
+        val history = chatItems.filter { !it.isError }.map { FacadeChatTurn(it.role, it.content) }
+        chatItems += ChatItem("user", text)
+        chatSending = true
+        count(target, FacadeCounter.AI_QUESTION)
+        scope.launch {
+            when (val r = FacadeAiApi.chat(pkg.facadeId, text, history)) {
+                is FacadeChatResult.Ok -> chatItems += ChatItem("assistant", r.reply, r.action?.toFacadeAction())
+                is FacadeChatResult.Error -> chatItems += ChatItem("assistant", r.message, isError = true)
+            }
+            chatSending = false
+        }
+    }
+
+    // Показ сцены: фасад узнан и хотя бы одна модель сцены готова. Повтор в той же сессии не считается.
+    LaunchedEffect(anchor != null, scene?.id, instances.isNotEmpty()) {
+        val s = scene
+        if (anchor != null && s != null && instances.isNotEmpty()) FacadeStats.impression(context, pkg.facadeId, s.id, s.erid)
+    }
+
     LaunchedEffect(Unit) {
         while (isActive && anchor == null) {
             delay(1_000)
@@ -278,6 +356,17 @@ private fun FacadeArContent(
                 }
                 config.augmentedImageDatabase = db
             },
+            onGestureListener = rememberOnGestureListener(
+                onSingleTapConfirmed = { _, node ->
+                    // Касание попадает в узел модели или в его часть — поднимаемся до модели сцены.
+                    var n: Node? = node
+                    while (n != null) {
+                        val m = modelNodes[n]
+                        if (m != null) { onModelTap(m); break }
+                        n = n.parent
+                    }
+                }
+            ),
             onSessionFailed = { e -> sessionError = "AR не запустилась: ${e.javaClass.simpleName}" },
             onSessionUpdated = { session: Session, frame: Frame ->
                 frameCounter[0]++
@@ -339,6 +428,9 @@ private fun FacadeArContent(
                                         // Невидимая стена: пишет только глубину и рисуется первой.
                                         setMaterialInstance(occlusion)
                                         renderableNodes.forEach { it.setPriority(0) }
+                                        // Стена не должна «перехватывать» касания моделей перед ней.
+                                        isTouchable = false
+                                        isHittable = false
                                         createdNodes += this
                                     }
                                 )
@@ -346,7 +438,7 @@ private fun FacadeArContent(
                         }
                         s.models.forEach { m ->
                             val inst = instances[m.id]
-                            if (inst != null) key(m.id) { SceneModelNode(m, inst, createdNodes) }
+                            if (inst != null) key(m.id) { SceneModelNode(m, inst, createdNodes, modelNodes) }
                         }
                     }
                 }
@@ -399,11 +491,51 @@ private fun FacadeArContent(
             prepareError?.let { Bubble(it) }
             if (anchor != null) scene?.ad?.let { AdLine(it) }
         }
+
+        sheet?.let { actions ->
+            ActionSheet(
+                title = null, actions = actions,
+                onPick = { a -> sheetTarget?.let { perform(a, it, actions) } },
+                onDismiss = { sheet = null }
+            )
+        }
+        openCard?.let { oc ->
+            FacadeCardDialog(
+                card = oc.card,
+                file = store.localFile(pkg.facadeId, oc.card.assetUrl),
+                ad = oc.card.ad ?: scene?.ad,
+                otherActions = oc.others,
+                // Действия из карточки учитываются на карточке (её erid).
+                onAction = { a ->
+                    if (a is FacadeAction.Ai) { openCard = null; chatTarget = oc.target; chatOpen = true }
+                    else if (launchExternal(context, a)) a.counter()?.let { count(oc.target, it) }
+                },
+                onDismiss = { openCard = null }
+            )
+        }
+        if (chatOpen) {
+            FacadeAiChatDialog(
+                title = "Помощник · ${pkg.title}",
+                items = chatItems,
+                sending = chatSending,
+                onSend = ::sendToAi,
+                onAction = { a ->
+                    val t = chatTarget ?: scene?.let { StatTarget(it.id, it.erid) }
+                    if (launchExternal(context, a) && t != null) a.counter()?.let { count(t, it) }
+                },
+                onDismiss = { chatOpen = false }
+            )
+        }
     }
 }
 
 @Composable
-private fun NodeScope.SceneModelNode(m: FacadeSceneModel, inst: ModelInstance, createdNodes: MutableList<Node>) {
+private fun NodeScope.SceneModelNode(
+    m: FacadeSceneModel,
+    inst: ModelInstance,
+    createdNodes: MutableList<Node>,
+    modelNodes: MutableMap<Node, FacadeSceneModel>
+) {
     var node by remember(m.id) { mutableStateOf<ModelNode?>(null) }
     ModelNode(
         modelInstance = inst,
@@ -413,6 +545,7 @@ private fun NodeScope.SceneModelNode(m: FacadeSceneModel, inst: ModelInstance, c
         scale = Scale(if (m.scale > 0f) m.scale else 1f),
         apply = {
             createdNodes += this
+            modelNodes[this] = m
             node = this
         }
     )

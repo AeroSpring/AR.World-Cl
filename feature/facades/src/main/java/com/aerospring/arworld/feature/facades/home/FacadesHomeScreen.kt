@@ -47,6 +47,7 @@ import androidx.core.content.ContextCompat
 import com.aerospring.arworld.core.data.geo.GeoMath
 import com.aerospring.arworld.feature.facades.data.DownloadProgress
 import com.aerospring.arworld.feature.facades.data.FacadePackage
+import com.aerospring.arworld.feature.facades.data.FacadeStats
 import com.aerospring.arworld.feature.facades.data.FacadeStore
 import com.aerospring.arworld.feature.facades.data.FacadesApi
 import com.aerospring.arworld.feature.facades.data.NearbyFacade
@@ -146,6 +147,9 @@ internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOp
     }
 
     // Список «рядом» — при первом определении места и после смещения больше чем на 200 м.
+    // Счётчики, накопленные у фасада без связи, — на сервер при входе в раздел и после выхода из AR.
+    LaunchedEffect(Unit) { FacadeStats.flush(context.applicationContext) }
+
     LaunchedEffect(location) {
         val loc = location ?: return@LaunchedEffect
         val prev = lastFetchAt
