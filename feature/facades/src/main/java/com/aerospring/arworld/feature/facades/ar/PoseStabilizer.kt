@@ -56,9 +56,13 @@ internal class PoseStabilizer(
      */
     fun correction(current: Pose, cameraDistance: Float): Pose? {
         if (samples.size < firstSamples) return null
-        val avg = average()
-        val move = dist(avg, current)
         val limit = maxOf(moveMeters, cameraDistance * moveFraction)
+        // Переставляем только по СОГЛАСНЫМ последним позам: если они «гуляют» (телефон быстро
+        // идёт вбок, эталон частично закрыт, единичный сбой распознавания) — сцену не трогаем.
+        val recent = samples.toList().takeLast(firstSamples)
+        val avg = average(recent)
+        if (recent.maxOf { dist(it, avg) } > limit * 1.5f) return null
+        val move = dist(avg, current)
         return if (move > limit || angleDegrees(avg, current) > turnDegrees) avg else null
     }
 
