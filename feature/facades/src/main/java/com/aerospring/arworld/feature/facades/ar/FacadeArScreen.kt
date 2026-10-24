@@ -38,6 +38,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -71,6 +72,12 @@ import com.aerospring.arworld.feature.facades.data.FacadeReference
 import com.aerospring.arworld.feature.facades.data.FacadeStats
 import com.aerospring.arworld.feature.facades.data.FacadeSceneModel
 import com.aerospring.arworld.feature.facades.data.FacadeStore
+import com.aerospring.arworld.feature.facades.data.FacadesInstallApi
+import com.aerospring.arworld.feature.facades.data.InstallerException
+import com.aerospring.arworld.feature.facades.data.InstallerSession
+import com.aerospring.arworld.feature.facades.stand.CaptureResult
+import com.aerospring.arworld.feature.facades.stand.CapturedReference
+import com.aerospring.arworld.feature.facades.stand.captureReference
 import com.google.ar.core.Anchor
 import com.google.ar.core.AugmentedImage
 import com.google.ar.core.AugmentedImageDatabase
@@ -117,6 +124,12 @@ private data class DefaultAnimation(val index: Int, val loop: Boolean)
 private data class StatTarget(val objectId: String, val erid: String?)
 
 /** Открытая карточка: что открыто, где учитывать действия из неё и что ещё умеет модель. */
+/** Снимок монтажника, готовый к отправке: картинка, ширина и где его центр в фасаде. */
+private class PendingCapture(val ref: CapturedReference, val pose: Pose)
+
+/** Напоминание о безопасности монтажнику — один раз за запуск приложения. */
+private object InstallSafety { var shown = false }
+
 private data class OpenCard(val card: FacadeAction.Detail, val target: StatTarget, val others: List<FacadeAction>)
 
 private fun FacadeSceneModel.animation(): DefaultAnimation? {
@@ -137,21 +150,17 @@ private fun FacadeSceneModel.animation(): DefaultAnimation? {
  * Плоскость эталона в ARCore: X — вправо, Z — вниз по изображению, Y — из фасада к зрителю.
  * Координаты фасада (студия): X — вправо, Y — вверх, Z — от фасада к улице. Переход —
  * поворот на −90° вокруг X. Дальше: центр эталона стоит в фасаде в точке [FacadeReference.pose]
- * (нет позы — эталон сам и есть начало координат), а калибровка монтажника сдвигает и
- * поворачивает (вокруг вертикали) всю сцену.
+ * (нет позы — эталон сам и есть начало координат).
+ *
+ * Калибровка монтажника (сдвиг, поворот вокруг вертикали, масштаб всей сцены) — не здесь, а
+ * узлом внутри якоря: так её можно менять на месте (шаг 3.4) без пересоздания якоря.
  */
-private fun sceneOriginFromImage(ref: FacadeReference?, pkg: FacadePackage): Pose {
+private fun sceneOriginFromImage(ref: FacadeReference?): Pose {
     val axes = Pose.makeRotation(-0.70710677f, 0f, 0f, 0.70710677f)
     val p = ref?.pose
     val refInFacade = if (p != null && p.position.size == 3 && p.rotation.size == 4)
         Pose(p.position.toFloatArray(), p.rotation.toFloatArray()) else Pose.IDENTITY
-    val cal = pkg.calibration
-    val half = Math.toRadians(cal.rotationY.toDouble()) / 2
-    val calPose = Pose(
-        (cal.position.takeIf { it.size == 3 } ?: listOf(0f, 0f, 0f)).toFloatArray(),
-        floatArrayOf(0f, kotlin.math.sin(half).toFloat(), 0f, kotlin.math.cos(half).toFloat())
-    )
-    return axes.compose(refInFacade.inverse()).compose(calPose)
+    return axes.compose(refInFacade.inverse())
 }
 
 /**
@@ -167,7 +176,13 @@ private fun sceneOriginFromImage(ref: FacadeReference?, pkg: FacadePackage): Pos
  * офлайн-счётчики (FacadeStats) — показ сцены, касания, действия, вопросы ИИ.
  */
 @Composable
-internal fun FacadeArScreen(facadeId: String, store: FacadeStore, onExit: () -> Unit) {
+internal fun FacadeArScreen(
+    facadeId: String,
+    store: FacadeStore,
+    /** Не null — предпросмотр монтажника: панель «Монтаж» (снять эталон, калибровка, выбор сцены). */
+    installer: InstallerSession? = null,
+    onExit: () -> Unit
+) {
     BackHandler(onBack = onExit)
 
     val pkg = remember(facadeId) { store.cachedPackage(facadeId) }
@@ -195,7 +210,7 @@ internal fun FacadeArScreen(facadeId: String, store: FacadeStore, onExit: () -> 
         }
         return
     }
-    FacadeArContent(pkg, store, refs, onExit)
+    FacadeArContent(pkg, store, refs, installer, onExit)
 }
 
 @Composable
@@ -203,6 +218,7 @@ private fun FacadeArContent(
     pkg: FacadePackage,
     store: FacadeStore,
     refs: List<Pair<FacadeReference, Bitmap>>,
+    installer: InstallerSession?,
     onExit: () -> Unit
 ) {
     val engine = rememberEngine()
@@ -211,14 +227,22 @@ private fun FacadeArContent(
     val occlusion = remember(materialLoader) { materialLoader.createOcclusionInstance() }
 
     // ── Сцена по расписанию (проверка раз в минуту) ──
-    var scene by remember { mutableStateOf(FacadeSceneChooser.choose(pkg)) }
+    var scheduled by remember { mutableStateOf(FacadeSceneChooser.choose(pkg)) }
     LaunchedEffect(pkg.facadeId) {
         while (isActive) {
             delay(60_000)
             val next = FacadeSceneChooser.choose(pkg)
-            if (next?.id != scene?.id) scene = next
+            if (next?.id != scheduled?.id) scheduled = next
         }
     }
+    // Монтажник может выбрать любую сцену, в том числе черновик (в предпросмотре они есть в копии).
+    var sceneOverride by remember { mutableStateOf<String?>(null) }
+    // derivedStateOf: обработчики касаний и кадров читают сцену «вживую», а не на момент композиции.
+    val scene by remember { derivedStateOf { sceneOverride?.let { id -> pkg.scenes.firstOrNull { it.id == id } } ?: scheduled } }
+
+    // Калибровка всей сцены: из копии; монтажник меняет её на месте и сохраняет на сервер.
+    var calibration by remember { mutableStateOf(pkg.calibration) }
+    var savedCalibration by remember { mutableStateOf(pkg.calibration) }
 
     // ── Подготовка моделей сцены и маски (из файлов на телефоне) ──
     val instances = remember { mutableStateMapOf<String, ModelInstance>() }
@@ -279,6 +303,82 @@ private fun FacadeArContent(
     val tapTolerancePx = with(density) { TAP_TOLERANCE_DP.dp.toPx() }
     val touchDown = remember { FloatArray(2) }   // x, y
     val touchDownAt = remember { LongArray(1) }
+
+    // ── Монтаж (шаг 3.4): только в предпросмотре монтажника ──
+    val visibleImages = remember { arrayOfNulls<List<AugmentedImage>>(1) }
+    var installMode by remember { mutableStateOf(InstallMode.NONE) }
+    var safetyDialog by remember { mutableStateOf(installer != null && !InstallSafety.shown) }
+    var pending by remember { mutableStateOf<PendingCapture?>(null) }
+    var sending by remember { mutableStateOf(false) }
+    var sendError by remember { mutableStateOf<String?>(null) }
+    var installMessage by remember { mutableStateOf<String?>(null) }
+    var calSaving by remember { mutableStateOf(false) }
+    var calMessage by remember { mutableStateOf<String?>(null) }
+
+    fun shoot() {
+        installMessage = null
+        val frame = lastFrame[0]
+        val images = visibleImages[0].orEmpty()
+        val img = images.firstOrNull { it.name == anchorRefId } ?: images.firstOrNull()
+        val a = anchor
+        if (frame == null || img == null || a == null) {
+            installMessage = "Узнанное место сейчас не в кадре. $SAFETY_LOOK_AROUND Затем, если безопасно, поверните камеру так, чтобы оно попало в кадр вместе с новым местом."
+            return
+        }
+        when (val r = captureReference(frame, viewport.width, viewport.height, images, "capture")) {
+            is CaptureResult.Failed -> installMessage = "Не снялось: ${r.reason}"
+            is CaptureResult.Ok -> {
+                val c = correction
+                val origin = a.pose.compose(Pose.makeTranslation(c.x, c.y, c.z))
+                val pose = newReferencePose(origin, img.centerPose, frame.camera.pose)
+                if (pose == null) installMessage = "Камера смотрит слишком вдоль фасада: снимайте место примерно прямо."
+                else { sendError = null; pending = PendingCapture(r.reference, pose) }
+            }
+        }
+    }
+
+    fun send(lighting: String) {
+        val p = pending ?: return
+        val s = installer ?: return
+        sending = true
+        sendError = null
+        scope.launch {
+            try {
+                FacadesInstallApi.uploadReference(
+                    s, pkg.facadeId, p.ref.bitmap, p.ref.widthMeters, lighting,
+                    p.pose.translation, p.pose.rotationQuaternion, p.ref.distanceMeters
+                )
+                pending = null
+                installMessage = "Эталон отправлен. У прохожих он заработает после обновления фасада, у вас — после нового «Предпросмотра»."
+            } catch (e: InstallerException) {
+                sendError = e.message + " — снимок не потерян, можно отправить ещё раз."
+            } catch (e: Exception) {
+                sendError = "Ошибка: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                sending = false
+            }
+        }
+    }
+
+    fun saveCalibration() {
+        val s = installer ?: return
+        val c = calibration
+        calSaving = true
+        calMessage = null
+        scope.launch {
+            try {
+                FacadesInstallApi.saveCalibration(s, pkg.facadeId, c)
+                savedCalibration = c
+                calMessage = "Сохранено. Прохожие увидят после обновления фасада."
+            } catch (e: InstallerException) {
+                calMessage = "Не сохранено: ${e.message}"
+            } catch (e: Exception) {
+                calMessage = "Не сохранено: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                calSaving = false
+            }
+        }
+    }
     var sheet by remember { mutableStateOf<List<FacadeAction>?>(null) }
     var sheetTarget by remember { mutableStateOf<StatTarget?>(null) }
     var openCard by remember { mutableStateOf<OpenCard?>(null) }
@@ -432,13 +532,14 @@ private fun FacadeArContent(
                     it.trackingState == TrackingState.TRACKING &&
                         it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
                 }
+                visibleImages[0] = visible
                 val img = visible.firstOrNull { it.name == anchorRefId } ?: visible.firstOrNull()
                 if (img != null) {
                     if (img.name != anchorRefId) {
                         if (anchorRefId != null) stabilizer.reset()   // другой эталон — копим заново
                         anchorRefId = img.name
                     }
-                    stabilizer.add(img.centerPose.compose(sceneOriginFromImage(refsById[img.name], pkg)))
+                    stabilizer.add(img.centerPose.compose(sceneOriginFromImage(refsById[img.name])))
                     val current = anchor
                     val cam = frame.camera.pose
                     val imgDist = kotlin.math.sqrt(
@@ -474,7 +575,14 @@ private fun FacadeArContent(
             val s = scene
             if (a != null && s != null) {
                 AnchorNode(anchor = a) {
-                    Node(position = correction, scale = Scale(pkg.calibration.scale.takeIf { it > 0f } ?: 1f)) {
+                    Node(position = correction) {
+                    val cal = calibration
+                    val cp = cal.position.takeIf { it.size == 3 } ?: listOf(0f, 0f, 0f)
+                    Node(
+                        position = Position(cp[0], cp[1], cp[2]),
+                        rotation = Rotation(0f, cal.rotationY, 0f),
+                        scale = Scale(cal.scale.takeIf { it > 0f } ?: 1f)
+                    ) {
                         maskInstance?.let { mask ->
                             key("mask") {
                                 ModelNode(
@@ -494,9 +602,12 @@ private fun FacadeArContent(
                             if (inst != null) key(m.id) { SceneModelNode(m, inst, createdNodes, modelNodes) }
                         }
                     }
+                    }
                 }
             }
         }
+
+        if (installer != null && installMode == InstallMode.CAPTURE) CaptureGuide()
 
         // ── Поверх камеры ──
         Column(Modifier.fillMaxWidth().statusBarsPadding()) {
@@ -543,6 +654,29 @@ private fun FacadeArContent(
             }
             prepareError?.let { Bubble(it) }
             if (anchor != null) scene?.ad?.let { AdLine(it) }
+            if (installer != null) {
+                installMessage?.let { Bubble(it) }
+                if (installMode == InstallMode.CALIBRATE) {
+                    CalibrationPanel(
+                        calibration = calibration,
+                        saving = calSaving,
+                        message = calMessage,
+                        onChange = { calibration = it; calMessage = null },
+                        onSave = ::saveCalibration,
+                        onCancel = { calibration = savedCalibration; calMessage = null; installMode = InstallMode.NONE }
+                    )
+                } else {
+                    InstallBar(
+                        recognized = anchor != null,
+                        mode = installMode,
+                        scenes = pkg.scenes,
+                        sceneOverride = sceneOverride,
+                        onMode = { installMode = it; installMessage = null },
+                        onScene = { sceneOverride = it },
+                        onShoot = ::shoot
+                    )
+                }
+            }
         }
 
         sheet?.let { actions ->
@@ -579,6 +713,19 @@ private fun FacadeArContent(
                     if (launchExternal(context, a) && t != null) a.counter()?.let { count(t, it) }
                 },
                 onDismiss = { chatOpen = false }
+            )
+        }
+        if (safetyDialog) InstallSafetyDialog(onOk = { InstallSafety.shown = true; safetyDialog = false })
+        pending?.let { p ->
+            CaptureConfirmDialog(
+                bitmap = p.ref.bitmap,
+                widthM = p.ref.widthMeters,
+                distanceM = p.ref.distanceMeters,
+                defaultLighting = lightingByHour(FacadeSceneChooser.now(pkg).hour),
+                sending = sending,
+                error = sendError,
+                onSend = ::send,
+                onCancel = { pending = null; sendError = null }
             )
         }
     }

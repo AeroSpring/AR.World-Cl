@@ -10,7 +10,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import com.aerospring.arworld.feature.facades.ar.FacadeArScreen
 import com.aerospring.arworld.feature.facades.data.FacadeStore
+import com.aerospring.arworld.feature.facades.data.InstallerPrefs
 import com.aerospring.arworld.feature.facades.home.FacadesHomeScreen
+import com.aerospring.arworld.feature.facades.home.PREVIEW_STORE
 import com.aerospring.arworld.feature.facades.permissions.RequireFacadesPermissions
 import com.aerospring.arworld.feature.facades.stand.FacadesStandScreen
 
@@ -28,8 +30,10 @@ const val FACADES_ROUTE = "ar_facades"
 fun FacadesEntryPoint(onExit: () -> Unit) {
     var standOpen by rememberSaveable { mutableStateOf(false) }
     var openedFacadeId by rememberSaveable { mutableStateOf<String?>(null) }
+    var openedPreview by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val store = remember { FacadeStore(context.applicationContext) }
+    val previewStore = remember { FacadeStore(context.applicationContext, PREVIEW_STORE) }
     RequireFacadesPermissions(onExit = onExit) { locationGranted ->
         val opened = openedFacadeId
         when {
@@ -37,8 +41,22 @@ fun FacadesEntryPoint(onExit: () -> Unit) {
                 BackHandler { standOpen = false }
                 FacadesStandScreen(locationGranted = locationGranted, onExit = { standOpen = false })
             }
-            opened != null -> FacadeArScreen(facadeId = opened, store = store, onExit = { openedFacadeId = null })
-            else -> FacadesHomeScreen(onExit = onExit, onOpenStand = { standOpen = true }, onOpenFacade = { openedFacadeId = it })
+            opened != null -> {
+                // Предпросмотр монтажника — из отдельной копии (с черновиками) и с панелью «Монтаж».
+                val installer = remember(opened, openedPreview) { if (openedPreview) InstallerPrefs.load(context.applicationContext) else null }
+                FacadeArScreen(
+                    facadeId = opened,
+                    store = if (openedPreview) previewStore else store,
+                    installer = installer,
+                    onExit = { openedFacadeId = null; openedPreview = false }
+                )
+            }
+            else -> FacadesHomeScreen(
+                onExit = onExit,
+                onOpenStand = { standOpen = true },
+                onOpenFacade = { openedPreview = false; openedFacadeId = it },
+                onOpenPreview = { openedPreview = true; openedFacadeId = it }
+            )
         }
     }
 }

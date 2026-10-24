@@ -50,6 +50,8 @@ import com.aerospring.arworld.feature.facades.data.FacadePackage
 import com.aerospring.arworld.feature.facades.data.FacadeStats
 import com.aerospring.arworld.feature.facades.data.FacadeStore
 import com.aerospring.arworld.feature.facades.data.FacadesApi
+import com.aerospring.arworld.feature.facades.data.InstallerPrefs
+import com.aerospring.arworld.feature.facades.data.InstallerSession
 import com.aerospring.arworld.feature.facades.data.NearbyFacade
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -84,7 +86,13 @@ private data class FacadeRow(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOpenFacade: (String) -> Unit) {
+internal fun FacadesHomeScreen(
+    onExit: () -> Unit,
+    onOpenStand: () -> Unit,
+    onOpenFacade: (String) -> Unit,
+    /** Монтажник: предпросмотр фасада с черновиками (копия в отдельной папке) и панель монтажа. */
+    onOpenPreview: (String) -> Unit
+) {
     val context = LocalContext.current
     val store = remember { FacadeStore(context) }
     val scope = rememberCoroutineScope()
@@ -104,6 +112,8 @@ internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOp
     val errors = remember { mutableStateMapOf<String, String>() }
     var opened by remember { mutableStateOf<FacadePackage?>(null) }
     val downloadLock = remember { Mutex() }
+    var installer by remember { mutableStateOf<InstallerSession?>(InstallerPrefs.load(context.applicationContext)) }
+    var installerLogin by remember { mutableStateOf(false) }
 
     fun refreshCached() { cached = store.cachedPackages() }
 
@@ -188,7 +198,11 @@ internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOp
                 navigationIcon = {
                     IconButton(onClick = onExit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад") }
                 },
-                actions = { TextButton(onClick = onOpenStand) { Text("Диагностика") } }
+                actions = {
+                    // Монтаж — для сотрудников и монтажников заказчика; прохожему кнопка не мешает.
+                    if (installer == null) TextButton(onClick = { installerLogin = true }) { Text("Монтаж") }
+                    TextButton(onClick = onOpenStand) { Text("Диагностика") }
+                }
             )
         }
     ) { padding ->
@@ -197,6 +211,11 @@ internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOp
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            installer?.let { s ->
+                item(key = "installer") {
+                    InstallerBlock(session = s, onLogout = { installer = null }, onOpenPreview = onOpenPreview)
+                }
+            }
             item {
                 val hint = when {
                     !locationAllowed -> "Нет доступа к геолокации: показываем только скачанные фасады."
@@ -226,6 +245,10 @@ internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOp
                 )
             }
         }
+    }
+
+    if (installerLogin) {
+        InstallerLoginDialog(onLoggedIn = { installer = it; installerLogin = false }, onDismiss = { installerLogin = false })
     }
 
     opened?.let { pkg ->

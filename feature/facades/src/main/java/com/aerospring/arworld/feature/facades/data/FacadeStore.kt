@@ -36,8 +36,8 @@ internal data class DownloadProgress(
  * уже скачанное не перекачивается, а старые версии удаляются после успешного обновления.
  * package.json пишется последним: если скачивание прервалось, старая копия остаётся рабочей.
  */
-internal class FacadeStore(context: Context) {
-    private val root = File(context.filesDir, "facades").apply { mkdirs() }
+internal class FacadeStore(context: Context, rootName: String = "facades") {
+    private val root = File(context.filesDir, rootName).apply { mkdirs() }
 
     private fun dir(id: String) = File(root, id.replace(Regex("[^A-Za-z0-9_-]"), "_"))
     private fun filesDir(id: String) = File(dir(id), "files")
@@ -83,9 +83,15 @@ internal class FacadeStore(context: Context) {
      * Скачать (или обновить) фасад целиком. Уже скачанные файлы не качаются заново.
      * [onProgress] вызывается из фонового потока.
      */
-    suspend fun download(facadeId: String, onProgress: (DownloadProgress) -> Unit): FacadePackage =
+    suspend fun download(
+        facadeId: String,
+        /** Предпросмотр монтажника: scene.json?preview=1 со входом — вместе с черновиками. */
+        previewToken: String? = null,
+        onProgress: (DownloadProgress) -> Unit
+    ): FacadePackage =
         withContext(Dispatchers.IO) {
-            val text = FacadesApi.getText(FacadesApi.sceneJsonUrl(facadeId))
+            val url = FacadesApi.sceneJsonUrl(facadeId) + if (previewToken != null) "?preview=1" else ""
+            val text = FacadesApi.getText(url, previewToken)
             val pkg = facadesJson.decodeFromString(FacadePackage.serializer(), text)
             val files = pkg.fileUrls()
             val target = filesDir(facadeId).apply { mkdirs() }
@@ -135,12 +141,13 @@ internal object FacadesApi {
         facadesJson.decodeFromString(ListSerializer(NearbyFacade.serializer()), getText(url))
     }
 
-    fun getText(url: String): String {
+    fun getText(url: String, token: String? = null): String {
         val c = URL(url).openConnection() as HttpURLConnection
         try {
             c.connectTimeout = 10_000
             c.readTimeout = 20_000
             c.setRequestProperty("Accept", "application/json")
+            token?.let { c.setRequestProperty("Authorization", "Bearer $it") }
             val code = c.responseCode
             if (code !in 200..299) throw IOException("HTTP $code")
             return c.inputStream.use { String(it.readBytes(), Charsets.UTF_8) }
