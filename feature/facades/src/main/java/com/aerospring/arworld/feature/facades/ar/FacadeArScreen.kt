@@ -295,12 +295,17 @@ private fun FacadeArContent(
                     }
                     stabilizer.add(img.centerPose.compose(sceneOriginFromImage(refsById[img.name], pkg)))
                     val current = anchor
+                    val cam = frame.camera.pose
+                    val imgDist = kotlin.math.sqrt(
+                        (cam.tx() - img.centerPose.tx()).let { it * it } + (cam.ty() - img.centerPose.ty()).let { it * it } +
+                            (cam.tz() - img.centerPose.tz()).let { it * it }
+                    )
                     if (current == null) {
-                        // Первый якорь — по среднему из нескольких кадров, а не по одному.
-                        stabilizer.firstPose()?.let { p ->
+                        // Первый якорь — по среднему из нескольких согласных кадров, а не по одному.
+                        stabilizer.firstPose(imgDist)?.let { p ->
                             try {
                                 anchor = session.createAnchor(p)
-                                Log.i(TAG, "Фасад узнан по эталону ${img.name}")
+                                Log.i(TAG, "Фасад узнан по эталону ${img.name}: %.1f м, разброс %.2f м".format(imgDist, stabilizer.lastSpread()))
                             } catch (e: Exception) {
                                 Log.w(TAG, "Якорь не создан: ${e.javaClass.simpleName}")
                             }
@@ -308,13 +313,11 @@ private fun FacadeArContent(
                     } else if (frameCounter[0] % 30 == 0 && current.trackingState == TrackingState.TRACKING) {
                         val c = correction
                         val effective = current.pose.compose(Pose.makeTranslation(c.x, c.y, c.z))
-                        val cam = frame.camera.pose
-                        val dist = kotlin.math.sqrt(
-                            (cam.tx() - effective.tx()).let { it * it } + (cam.ty() - effective.ty()).let { it * it } +
-                                (cam.tz() - effective.tz()).let { it * it }
-                        )
-                        stabilizer.correction(effective, dist)?.let { target ->
+                        stabilizer.correction(effective, imgDist)?.let { target ->
                             val local = current.pose.inverse().compose(target)
+                            Log.i(TAG, "Поправка сцены: %.2f м (до эталона %.1f м)".format(
+                                kotlin.math.sqrt((local.tx() - c.x).let { it * it } + (local.ty() - c.y).let { it * it } + (local.tz() - c.z).let { it * it }),
+                                imgDist))
                             correction = Position(local.tx(), local.ty(), local.tz())
                         }
                     }

@@ -33,8 +33,22 @@ internal class PoseStabilizer(
         while (samples.size > window) samples.removeFirst()
     }
 
-    /** Среднее — для первого якоря, когда поз накопилось достаточно; иначе null. */
-    fun firstPose(): Pose? = if (samples.size >= firstSamples) average() else null
+    /**
+     * Среднее — для первого якоря, когда поз накопилось достаточно и они СОГЛАСНЫ между собой;
+     * иначе null (копим дальше). Разброс бывает большим, когда эталон виден частично (закрыт
+     * прохожим, деревом, краем кадра) — по таким кадрам сцену не ставим.
+     */
+    fun firstPose(cameraDistance: Float): Pose? {
+        if (samples.size < firstSamples) return null
+        val recent = samples.toList().takeLast(firstSamples)
+        val avg = average(recent)
+        val spread = recent.maxOf { dist(it, avg) }
+        val limit = maxOf(moveMeters, cameraDistance * moveFraction) * 1.5f
+        return if (spread <= limit) avg else null
+    }
+
+    /** Насколько разошлись последние позы (для журнала). */
+    fun lastSpread(): Float = if (samples.isEmpty()) 0f else average().let { a -> samples.maxOf { dist(it, a) } }
 
     /**
      * Надо ли переставить якорь [current]: возвращает новую позу или null.
@@ -43,15 +57,18 @@ internal class PoseStabilizer(
     fun correction(current: Pose, cameraDistance: Float): Pose? {
         if (samples.size < firstSamples) return null
         val avg = average()
-        val dx = avg.tx() - current.tx()
-        val dy = avg.ty() - current.ty()
-        val dz = avg.tz() - current.tz()
-        val move = sqrt(dx * dx + dy * dy + dz * dz)
+        val move = dist(avg, current)
         val limit = maxOf(moveMeters, cameraDistance * moveFraction)
         return if (move > limit || angleDegrees(avg, current) > turnDegrees) avg else null
     }
 
-    private fun average(): Pose {
+    private fun dist(a: Pose, b: Pose): Float {
+        val dx = a.tx() - b.tx(); val dy = a.ty() - b.ty(); val dz = a.tz() - b.tz()
+        return sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    private fun average(list: Collection<Pose> = samples): Pose {
+        val samples = list
         val n = samples.size.toFloat()
         var tx = 0f; var ty = 0f; var tz = 0f
         val first = samples.first()
