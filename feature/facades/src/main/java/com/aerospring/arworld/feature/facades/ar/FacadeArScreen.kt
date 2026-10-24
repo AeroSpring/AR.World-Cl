@@ -328,8 +328,9 @@ private fun FacadeArContent(
         when (val r = captureReference(frame, viewport.width, viewport.height, images, "capture")) {
             is CaptureResult.Failed -> installMessage = "Не снялось: ${r.reason}"
             is CaptureResult.Ok -> {
-                val c = correction
-                val origin = a.pose.compose(Pose.makeTranslation(c.x, c.y, c.z))
+                // Начало фасада — по узнанному эталону В ЭТОМ ЖЕ кадре, а не по якорю: якорь мог
+                // «уплыть» (на мониторе — точно), а взаимное положение двух мест в одном кадре точное.
+                val origin = img.centerPose.compose(sceneOriginFromImage(refsById[img.name]))
                 val pose = newReferencePose(origin, img.centerPose, frame.camera.pose)
                 if (pose == null) installMessage = "Камера смотрит слишком вдоль фасада: снимайте место примерно прямо."
                 else { sendError = null; pending = PendingCapture(r.reference, pose) }
