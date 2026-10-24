@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -207,7 +208,8 @@ private fun FacadeArContent(
         var done = 0L
         for ((id, file) in files) {
             val inst = try {
-                modelLoader.loadModelInstance(file.absolutePath)
+                // Только «file://…»: голый путь SceneView ищет среди assets приложения (проверено на телефоне).
+                modelLoader.loadModelInstance(Uri.fromFile(file).toString())
             } catch (e: Exception) {
                 Log.e(TAG, "Модель $id не загрузилась", e)
                 null
