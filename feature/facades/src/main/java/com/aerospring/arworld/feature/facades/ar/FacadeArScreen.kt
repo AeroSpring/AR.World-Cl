@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -43,7 +45,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -92,7 +97,9 @@ private const val DARK_LUMA = 45
 private data class DefaultAnimation(val index: Int, val loop: Boolean)
 
 private fun FacadeSceneModel.animation(): DefaultAnimation? {
-    val a = defaultAnimation ?: return null
+    // Не задано в студии — играем первую анимацию модели по кругу (если она в файле есть).
+    // Выключить — в студии «Как играть: не запускать».
+    val a = defaultAnimation ?: return DefaultAnimation(0, loop = true)
     val index = a["index"]?.jsonPrimitive?.intOrNull ?: return null
     return when (a["mode"]?.jsonPrimitive?.contentOrNull ?: "loop") {
         "none" -> null
@@ -225,7 +232,10 @@ private fun FacadeArContent(
     // ── Распознавание ──
     var anchor by remember { mutableStateOf<Anchor?>(null) }
     var anchorRefId by remember { mutableStateOf<String?>(null) }
-    var trackingNow by remember { mutableStateOf(false) }
+    // Поправка положения сцены внутри якоря (см. PoseStabilizer): якорь не пересоздаётся,
+    // чтобы не пересоздавать модели, — сдвигается только узел сцены.
+    var correction by remember { mutableStateOf(Position(0f, 0f, 0f)) }
+    val stabilizer = remember { PoseStabilizer() }
     var sessionError by remember { mutableStateOf<String?>(null) }
     var dark by remember { mutableStateOf(false) }
     var notFoundLong by remember { mutableStateOf(false) }
@@ -233,6 +243,7 @@ private fun FacadeArContent(
     val frameCounter = remember { IntArray(1) }
     val createdNodes = remember { mutableListOf<Node>() }
     val refsById = remember(refs) { refs.associate { it.first.id to it.first } }
+    val hintReference = remember(refs) { pickHintReference(refs, FacadeSceneChooser.now(pkg).hour) }
 
     LaunchedEffect(Unit) {
         while (isActive && anchor == null) {
@@ -268,25 +279,46 @@ private fun FacadeArContent(
                 config.augmentedImageDatabase = db
             },
             onSessionFailed = { e -> sessionError = "AR не запустилась: ${e.javaClass.simpleName}" },
-            onSessionUpdated = { _: Session, frame: Frame ->
+            onSessionUpdated = { session: Session, frame: Frame ->
                 frameCounter[0]++
-                var seenNow = false
-                for (img in frame.getUpdatedTrackables(AugmentedImage::class.java)) {
-                    if (img.trackingState != TrackingState.TRACKING) continue
-                    if (img.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING) seenNow = true
-                    if (anchor == null && img.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING) {
-                        val ref = refsById[img.name]
-                        try {
-                            // Якорь на самом изображении: ARCore уточняет его вместе с распознаванием.
-                            anchor = img.createAnchor(img.centerPose.compose(sceneOriginFromImage(ref, pkg)))
-                            anchorRefId = img.name
-                            Log.i(TAG, "Фасад узнан по эталону ${img.name}")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Якорь не создан: ${e.javaClass.simpleName}")
+                // Эталон, который сейчас виден по-настоящему (не «по памяти»): сначала тот, к которому
+                // уже привязана сцена, иначе любой.
+                val visible = session.getAllTrackables(AugmentedImage::class.java).filter {
+                    it.trackingState == TrackingState.TRACKING &&
+                        it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
+                }
+                val img = visible.firstOrNull { it.name == anchorRefId } ?: visible.firstOrNull()
+                if (img != null) {
+                    if (img.name != anchorRefId) {
+                        if (anchorRefId != null) stabilizer.reset()   // другой эталон — копим заново
+                        anchorRefId = img.name
+                    }
+                    stabilizer.add(img.centerPose.compose(sceneOriginFromImage(refsById[img.name], pkg)))
+                    val current = anchor
+                    if (current == null) {
+                        // Первый якорь — по среднему из нескольких кадров, а не по одному.
+                        stabilizer.firstPose()?.let { p ->
+                            try {
+                                anchor = session.createAnchor(p)
+                                Log.i(TAG, "Фасад узнан по эталону ${img.name}")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Якорь не создан: ${e.javaClass.simpleName}")
+                            }
+                        }
+                    } else if (frameCounter[0] % 30 == 0 && current.trackingState == TrackingState.TRACKING) {
+                        val c = correction
+                        val effective = current.pose.compose(Pose.makeTranslation(c.x, c.y, c.z))
+                        val cam = frame.camera.pose
+                        val dist = kotlin.math.sqrt(
+                            (cam.tx() - effective.tx()).let { it * it } + (cam.ty() - effective.ty()).let { it * it } +
+                                (cam.tz() - effective.tz()).let { it * it }
+                        )
+                        stabilizer.correction(effective, dist)?.let { target ->
+                            val local = current.pose.inverse().compose(target)
+                            correction = Position(local.tx(), local.ty(), local.tz())
                         }
                     }
                 }
-                if (frameCounter[0] % 15 == 0) trackingNow = seenNow || anchor != null
                 if (frameCounter[0] % 45 == 0) frameLuma(frame)?.let { dark = it < DARK_LUMA }
             }
         ) {
@@ -294,7 +326,7 @@ private fun FacadeArContent(
             val s = scene
             if (a != null && s != null) {
                 AnchorNode(anchor = a) {
-                    Node(scale = Scale(pkg.calibration.scale.takeIf { it > 0f } ?: 1f)) {
+                    Node(position = correction, scale = Scale(pkg.calibration.scale.takeIf { it > 0f } ?: 1f)) {
                         maskInstance?.let { mask ->
                             key("mask") {
                                 ModelNode(
@@ -337,9 +369,8 @@ private fun FacadeArContent(
             scene == null -> "Сейчас на этом фасаде нечего показать."
             anchor == null && notFoundLong ->
                 // Правило безопасности: прежде чем советовать переместиться — попросить осмотреться.
-                "Фасад пока не узнан. Сначала осмотритесь: бордюры, дорога и автомобили, другие прохожие. " +
-                    "Затем, если безопасно, встаньте так, чтобы фасад был виден целиком и прямо."
-            anchor == null -> "Наведите камеру на фасад «${pkg.title}»."
+                "Здание пока не узнано. Сначала осмотритесь: бордюры, дорога и автомобили, другие прохожие. " +
+                    "Затем, если безопасно, встаньте так, чтобы место с картинки было видно целиком и прямо."
             else -> null
         }
         Column(
@@ -349,6 +380,11 @@ private fun FacadeArContent(
         ) {
             if (dark) Bubble("Темновато: фасад узнаётся хуже. Лучше всего — днём.")
             hint?.let { Bubble(it) }
+            // Пока фасад не узнан — показываем, КУДА навести камеру: прохожий не знает ни названия,
+            // ни где именно «фасад». Снимок эталона — та самая часть здания.
+            if (anchor == null && sessionError == null && scene != null) {
+                hintReference?.let { ReferenceHint(it) }
+            }
             if (!prepared && scene != null) {
                 Column(
                     Modifier.widthIn(max = 420.dp).fillMaxWidth().background(Color(0xB3000000), RoundedCornerShape(12.dp)).padding(12.dp)
@@ -397,6 +433,31 @@ private fun NodeScope.SceneModelNode(m: FacadeSceneModel, inst: ModelInstance, c
             animator.updateBoneMatrices()
             if (!a.loop && elapsed >= duration) break
         }
+    }
+}
+
+/** Эталон для подсказки: снятый при похожем освещении (по часу у фасада), иначе первый. */
+private fun pickHintReference(refs: List<Pair<FacadeReference, Bitmap>>, hour: Int): Bitmap? {
+    val want = when (hour) {
+        in 7..16 -> setOf("day", "overcast")
+        in 17..20 -> setOf("evening")
+        else -> setOf("night", "evening")
+    }
+    return (refs.firstOrNull { it.first.lighting in want } ?: refs.firstOrNull { it.first.lighting == "any" } ?: refs.firstOrNull())?.second
+}
+
+@Composable
+private fun ReferenceHint(bitmap: Bitmap) {
+    val image = remember(bitmap) { bitmap.asImageBitmap() }
+    Row(
+        Modifier.widthIn(max = 420.dp).background(Color(0xB3000000), RoundedCornerShape(12.dp)).padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            bitmap = image, contentDescription = "Куда навести камеру",
+            modifier = Modifier.size(84.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop
+        )
+        Text("Наведите камеру на это место здания", color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(start = 12.dp))
     }
 }
 
