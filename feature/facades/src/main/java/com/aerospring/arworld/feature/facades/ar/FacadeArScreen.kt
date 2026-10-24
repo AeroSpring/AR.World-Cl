@@ -6,7 +6,9 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.opengl.Matrix
 import android.util.Log
+import android.view.MotionEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -34,6 +36,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -50,7 +53,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -84,7 +90,6 @@ import io.github.sceneview.node.Node
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelLoader
-import io.github.sceneview.rememberOnGestureListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -98,6 +103,9 @@ private const val TAG = "FacadeAr"
 
 /** Если за это время фасад не узнан — подсказка (с правилом безопасности). */
 private const val NOT_FOUND_HINT_MS = 15_000L
+
+/** Касание засчитывается модели в этом радиусе от её центра на экране (или в пределах её видимого размера). */
+private const val TAP_TOLERANCE_DP = 70f
 
 /** Средняя яркость кадра (0…255), ниже которой фасад узнаётся плохо. */
 private const val DARK_LUMA = 45
@@ -264,7 +272,13 @@ private fun FacadeArContent(
     // ── Касания, действия, счётчики (шаг 3.3) ──
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val modelNodes = remember { HashMap<Node, FacadeSceneModel>() }
+    val modelNodes = remember { HashMap<ModelNode, FacadeSceneModel>() }
+    val lastFrame = remember { arrayOfNulls<Frame>(1) }
+    var viewport by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
+    val density = LocalDensity.current
+    val tapTolerancePx = with(density) { TAP_TOLERANCE_DP.dp.toPx() }
+    val touchDown = remember { FloatArray(2) }   // x, y
+    val touchDownAt = remember { LongArray(1) }
     var sheet by remember { mutableStateOf<List<FacadeAction>?>(null) }
     var sheetTarget by remember { mutableStateOf<StatTarget?>(null) }
     var openCard by remember { mutableStateOf<OpenCard?>(null) }
@@ -300,6 +314,45 @@ private fun FacadeArContent(
             1 -> perform(actions[0], target, actions)
             else -> { sheetTarget = target; sheet = actions }
         }
+    }
+
+    /**
+     * Какая модель под пальцем. Встроенный «пикинг» SceneView в проекте подводил (AR.Визитки,
+     * «Где что находится»), поэтому — свой: центр модели проецируется на экран матрицами камеры
+     * ARCore, засчитывается ближайшая в пределах 70dp или видимого размера модели.
+     */
+    fun findTappedModel(tap: Offset): FacadeSceneModel? {
+        val frame = lastFrame[0] ?: return null
+        if (viewport.width == 0 || viewport.height == 0) return null
+        val view = FloatArray(16)
+        val proj = FloatArray(16)
+        val vp = FloatArray(16)
+        frame.camera.getViewMatrix(view, 0)
+        frame.camera.getProjectionMatrix(proj, 0, 0.05f, 500f)
+        Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
+        fun project(x: Float, y: Float, z: Float): Offset? {
+            val out = FloatArray(4)
+            Matrix.multiplyMV(out, 0, vp, 0, floatArrayOf(x, y, z, 1f), 0)
+            if (out[3] <= 0f) return null   // позади камеры
+            return Offset((out[0] / out[3] * 0.5f + 0.5f) * viewport.width, (0.5f - out[1] / out[3] * 0.5f) * viewport.height)
+        }
+        val right = frame.camera.displayOrientedPose.xAxis
+        var best: FacadeSceneModel? = null
+        var bestScore = Float.MAX_VALUE
+        for ((node, m) in modelNodes) {
+            if (!node.isVisible) continue
+            val p = node.worldPosition
+            val center = project(p.x, p.y, p.z) ?: continue
+            // Видимый размер модели: половина её габарита (с учётом масштаба сцены) по горизонтали экрана.
+            val sc = node.worldScale
+            val he = node.halfExtent
+            val r = (maxOf(he.x, he.y, he.z) + kotlin.math.sqrt(node.center.let { it.x * it.x + it.y * it.y + it.z * it.z })) * maxOf(sc.x, sc.y, sc.z)
+            val radiusPx = project(p.x + right[0] * r, p.y + right[1] * r, p.z + right[2] * r)?.let { (it - center).getDistance() } ?: 0f
+            val reach = maxOf(tapTolerancePx, radiusPx)
+            val d = (center - tap).getDistance()
+            if (d <= reach && d / reach < bestScore) { best = m; bestScore = d / reach }
+        }
+        return best
     }
 
     fun sendToAi(text: String) {
@@ -338,7 +391,7 @@ private fun FacadeArContent(
 
     Box(Modifier.fillMaxSize()) {
         ARSceneView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().onSizeChanged { viewport = it },
             engine = engine,
             modelLoader = modelLoader,
             materialLoader = materialLoader,
@@ -356,20 +409,23 @@ private fun FacadeArContent(
                 }
                 config.augmentedImageDatabase = db
             },
-            onGestureListener = rememberOnGestureListener(
-                onSingleTapConfirmed = { _, node ->
-                    // Касание попадает в узел модели или в его часть — поднимаемся до модели сцены.
-                    var n: Node? = node
-                    while (n != null) {
-                        val m = modelNodes[n]
-                        if (m != null) { onModelTap(m); break }
-                        n = n.parent
+            onTouchEvent = { e: MotionEvent, _ ->
+                // Короткое касание без сдвига — «тап» по модели; остальное SceneView обрабатывает как обычно.
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> { touchDown[0] = e.x; touchDown[1] = e.y; touchDownAt[0] = e.eventTime }
+                    MotionEvent.ACTION_UP -> {
+                        val moved = kotlin.math.hypot(e.x - touchDown[0], e.y - touchDown[1])
+                        if (moved < tapTolerancePx / 3f && e.eventTime - touchDownAt[0] < 500) {
+                            findTappedModel(Offset(e.x, e.y))?.let { onModelTap(it) }
+                        }
                     }
                 }
-            ),
+                false
+            },
             onSessionFailed = { e -> sessionError = "AR не запустилась: ${e.javaClass.simpleName}" },
             onSessionUpdated = { session: Session, frame: Frame ->
                 frameCounter[0]++
+                lastFrame[0] = frame
                 // Эталон, который сейчас виден по-настоящему (не «по памяти»): сначала тот, к которому
                 // уже привязана сцена, иначе любой.
                 val visible = session.getAllTrackables(AugmentedImage::class.java).filter {
@@ -428,9 +484,6 @@ private fun FacadeArContent(
                                         // Невидимая стена: пишет только глубину и рисуется первой.
                                         setMaterialInstance(occlusion)
                                         renderableNodes.forEach { it.setPriority(0) }
-                                        // Стена не должна «перехватывать» касания моделей перед ней.
-                                        isTouchable = false
-                                        isHittable = false
                                         createdNodes += this
                                     }
                                 )
@@ -534,7 +587,7 @@ private fun NodeScope.SceneModelNode(
     m: FacadeSceneModel,
     inst: ModelInstance,
     createdNodes: MutableList<Node>,
-    modelNodes: MutableMap<Node, FacadeSceneModel>
+    modelNodes: MutableMap<ModelNode, FacadeSceneModel>
 ) {
     var node by remember(m.id) { mutableStateOf<ModelNode?>(null) }
     ModelNode(
@@ -549,6 +602,11 @@ private fun NodeScope.SceneModelNode(
             node = this
         }
     )
+    // Модель ушла со сцены (сменилась сцена по расписанию) — касания по ней больше не ловим.
+    DisposableEffect(node) {
+        val n = node
+        onDispose { n?.let { modelNodes.remove(it) } }
+    }
     // Анимация по индексу с ручным временем (как в AR.Визитках): своего зацикливания у SceneView нет.
     val anim = remember(m.id) { m.animation() }
     LaunchedEffect(node, anim) {
