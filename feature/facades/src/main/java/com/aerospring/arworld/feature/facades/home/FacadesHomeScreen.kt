@@ -79,11 +79,11 @@ private data class FacadeRow(
  * у самого фасада мобильный интернет может не работать. Если фасад в радиусе обнаружения —
  * скачивание начинается само. Без связи показываем то, что уже скачано.
  *
- * Шаг 3.1: «Открыть» показывает, что лежит на телефоне. AR-просмотр — шаг 3.2.
+ * «Открыть» — AR-просмотр (шаг 3.2), «Что скачано» — сводка копии на телефоне.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit) {
+internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit, onOpenFacade: (String) -> Unit) {
     val context = LocalContext.current
     val store = remember { FacadeStore(context) }
     val scope = rememberCoroutineScope()
@@ -217,7 +217,8 @@ internal fun FacadesHomeScreen(onExit: () -> Unit, onOpenStand: () -> Unit) {
                     progress = progress[row.id],
                     error = errors[row.id],
                     onDownload = { download(row.id) },
-                    onOpen = { opened = row.cached }
+                    onOpen = { onOpenFacade(row.id) },
+                    onSummary = { opened = row.cached }
                 )
             }
         }
@@ -239,7 +240,8 @@ private fun FacadeCard(
     progress: DownloadProgress?,
     error: String?,
     onDownload: () -> Unit,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    onSummary: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth().clickable(enabled = row.cached != null && row.complete && progress == null) { onOpen() }) {
         Column(Modifier.padding(14.dp)) {
@@ -272,7 +274,8 @@ private fun FacadeCard(
                         Button(onClick = onDownload) { Text(if (row.cached == null) "Скачать" else "Обновить") }
                     }
                     if (row.cached != null && row.complete) {
-                        OutlinedButton(onClick = onOpen) { Text("Открыть") }
+                        Button(onClick = onOpen) { Text("Открыть") }
+                        OutlinedButton(onClick = onSummary) { Text("Что скачано") }
                     }
                 }
             }
@@ -298,8 +301,6 @@ private fun PackageDialog(pkg: FacadePackage, sizeOnPhone: Long, onDelete: () ->
                 }
                 Text("ИИ-помощник: ${if (pkg.ai.enabled) "есть" else "нет"}")
                 pkg.ad.testBanner?.let { Text(it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold) }
-                Spacer(Modifier.height(6.dp))
-                Text("AR-просмотр фасада появится в следующей порции (3.2).", style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } },
