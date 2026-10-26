@@ -3,6 +3,7 @@ package com.aerospring.arworld.feature.facades.home
 import android.Manifest
 import android.content.pm.PackageManager
 import android.location.Location
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -157,17 +158,26 @@ internal fun FacadesHomeScreen(
         }
     }
 
+    // Один неудачный запрос (сеть просыпается, VPN, медленный ответ) — ещё не «нет связи»:
+    // три попытки с паузами, и только потом спокойная подсказка; следующая проверка — через минуту.
     suspend fun fetchNearby(loc: Location) {
         loading = true
         try {
-            val list = FacadesApi.nearby(loc.latitude, loc.longitude)
-            nearby = list
-            networkProblem = null
-            withContext(Dispatchers.IO) { store.saveNearby(list) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            networkProblem = "Нет связи с сервером — показаны фасады, скачанные раньше."
+            for (attempt in 1..3) {
+                try {
+                    val list = FacadesApi.nearby(loc.latitude, loc.longitude)
+                    nearby = list
+                    networkProblem = null
+                    withContext(Dispatchers.IO) { store.saveNearby(list) }
+                    return
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("FacadesHome", "Список фасадов: попытка $attempt не удалась — ${e.javaClass.simpleName}: ${e.message}")
+                    if (attempt < 3) delay(if (attempt == 1) 2_000 else 5_000)
+                }
+            }
+            networkProblem = "Список пока не обновился — попробуем ещё раз через минуту. Скачанные фасады работают и без интернета."
             if (nearby == null) nearby = store.cachedNearby()
         } finally {
             loading = false
@@ -195,7 +205,8 @@ internal fun FacadesHomeScreen(
         val prev = lastFetchAt
         if (prev == null || prev.distanceTo(loc) > 200f) {
             lastFetchAt = loc
-            fetchNearby(loc)
+            // Отдельной задачей: новая точка GPS не должна обрывать начатый запрос.
+            scope.launch { fetchNearby(loc) }
         }
     }
 
@@ -256,7 +267,7 @@ internal fun FacadesHomeScreen(
                     else -> null
                 }
                 hint?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                networkProblem?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+                networkProblem?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
             if (rows.isEmpty() && !loading) {
                 item {
