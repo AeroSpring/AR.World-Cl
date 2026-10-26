@@ -3,6 +3,11 @@ package com.aerospring.arworld.feature.facades.home
 import android.Manifest
 import android.content.pm.PackageManager
 import android.location.Location
+import androidx.compose.runtime.DisposableEffect
+import android.net.NetworkCapabilities
+import android.net.Network
+import android.net.ConnectivityManager
+import android.content.Context
 import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -194,10 +199,19 @@ internal fun FacadesHomeScreen(
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (isActive) {
-                delay(60_000)
+                // Список не обновился — пробуем чаще (10 с), иначе раз в минуту.
+                delay(if (networkProblem != null) 10_000 else 60_000)
                 location?.let { loc -> lastFetchAt = loc; fetchNearby(loc) }
             }
         }
+    }
+
+    // Сеть появилась (вышли из режима полёта, поймали Wi-Fi) — обновить список сразу, не дожидаясь минуты.
+    val networkBack = rememberNetworkBack()
+    LaunchedEffect(networkBack) {
+        if (networkBack == 0) return@LaunchedEffect
+        delay(1_500)   // дать сети «устояться»: DNS и маршрут появляются чуть позже самого события
+        location?.let { loc -> lastFetchAt = loc; fetchNearby(loc) }
     }
 
     LaunchedEffect(location) {
@@ -386,3 +400,36 @@ private fun formatDistance(m: Int): String =
 private fun formatSize(bytes: Long): String =
     if (bytes >= 1024 * 1024) String.format(java.util.Locale.forLanguageTag("ru"), "%.1f МБ", bytes / 1048576.0)
     else "${maxOf(1, bytes / 1024)} КБ"
+
+
+/**
+ * Счётчик «сеть снова есть»: растёт, когда у телефона появляется проверенное подключение к интернету
+ * (Android сам проверил, что сайты открываются). Нужен разрешение ACCESS_NETWORK_STATE — выдаётся без запроса.
+ */
+@Composable
+private fun rememberNetworkBack(): Int {
+    val context = LocalContext.current
+    var counter by remember { mutableStateOf(0) }
+    DisposableEffect(Unit) {
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        var hadInternet = cm?.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                val now = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                if (now && !hadInternet) counter++   // счётчик — состояние Compose, безопасно из любого потока
+                hadInternet = now
+            }
+
+            override fun onLost(network: Network) {
+                hadInternet = false
+            }
+        }
+        try {
+            cm?.registerDefaultNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w("FacadesHome", "Слежение за сетью недоступно: ${e.javaClass.simpleName}")
+        }
+        onDispose { try { cm?.unregisterNetworkCallback(callback) } catch (_: Exception) {} }
+    }
+    return counter
+}
