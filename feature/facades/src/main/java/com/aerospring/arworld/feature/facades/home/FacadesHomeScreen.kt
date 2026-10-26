@@ -61,6 +61,11 @@ import com.aerospring.arworld.feature.facades.data.NearbyFacade
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -172,6 +177,18 @@ internal fun FacadesHomeScreen(
     // Список «рядом» — при первом определении места и после смещения больше чем на 200 м.
     // Счётчики, накопленные у фасада без связи, — на сервер при входе в раздел и после выхода из AR.
     LaunchedEffect(Unit) { FacadeStats.flush(context.applicationContext) }
+
+    // Пока список на экране — раз в минуту спрашиваем сервер заново: правки в студии (новые модели,
+    // сцены, эталоны) видны сразу, а фасад в радиусе обнаружения сам докачивается. В фоне не опрашиваем.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (isActive) {
+                delay(60_000)
+                location?.let { loc -> lastFetchAt = loc; fetchNearby(loc) }
+            }
+        }
+    }
 
     LaunchedEffect(location) {
         val loc = location ?: return@LaunchedEffect

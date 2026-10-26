@@ -46,5 +46,6 @@ dependencies {
     // Geospatial API требует play-services-location >= 16 (документация ARCore).
     implementation(libs.play.services.location)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.kotlinx.serialization.json)
 }

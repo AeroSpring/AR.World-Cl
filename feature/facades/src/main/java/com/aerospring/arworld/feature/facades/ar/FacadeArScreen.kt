@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -75,6 +76,9 @@ import com.aerospring.arworld.feature.facades.data.FacadeReference
 import com.aerospring.arworld.feature.facades.data.FacadeStats
 import com.aerospring.arworld.feature.facades.data.FacadeSceneModel
 import com.aerospring.arworld.feature.facades.data.FacadeStore
+import com.aerospring.arworld.feature.facades.data.DownloadProgress
+import com.aerospring.arworld.feature.facades.data.FacadesApi
+import com.aerospring.arworld.feature.facades.data.facadesJson
 import com.aerospring.arworld.feature.facades.data.FacadesInstallApi
 import com.aerospring.arworld.feature.facades.data.InstallerException
 import com.aerospring.arworld.feature.facades.data.InstallerSession
@@ -107,6 +111,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 private const val TAG = "FacadeAr"
@@ -188,7 +194,9 @@ internal fun FacadeArScreen(
 ) {
     BackHandler(onBack = onExit)
 
-    val pkg = remember(facadeId) { store.cachedPackage(facadeId) }
+    // После обновления фасада копия на телефоне перечитывается, AR-сцена создаётся заново.
+    var reload by remember(facadeId) { mutableIntStateOf(0) }
+    val pkg = remember(facadeId, reload) { store.cachedPackage(facadeId) }
     if (pkg == null || !store.isComplete(pkg)) {
         Column(Modifier.fillMaxSize().background(Color.Black).padding(24.dp), verticalArrangement = Arrangement.Center) {
             Text("Фасад не скачан на телефон полностью. Вернитесь к списку и скачайте его.", color = Color.White)
@@ -198,8 +206,8 @@ internal fun FacadeArScreen(
     }
 
     // Эталоны читаются с телефона до создания AR-сессии: база изображений задаётся в её настройках.
-    var references by remember(facadeId) { mutableStateOf<List<Pair<FacadeReference, Bitmap>>?>(null) }
-    LaunchedEffect(facadeId) {
+    var references by remember(facadeId, pkg.version) { mutableStateOf<List<Pair<FacadeReference, Bitmap>>?>(null) }
+    LaunchedEffect(facadeId, pkg.version) {
         references = withContext(Dispatchers.IO) {
             pkg.references.mapNotNull { r ->
                 BitmapFactory.decodeFile(store.localFile(pkg.facadeId, r.url).absolutePath)?.let { r to it }
@@ -213,7 +221,65 @@ internal fun FacadeArScreen(
         }
         return
     }
-    FacadeArContent(pkg, store, refs, installer, onExit)
+    Box(Modifier.fillMaxSize()) {
+        key(pkg.version) { FacadeArContent(pkg, store, refs, installer, onExit) }
+        // Прохожему: фасад поменяли на сервере, пока он смотрит, — предложить обновить на месте.
+        if (installer == null) UpdateWatcher(pkg, store, onUpdated = { reload++ })
+    }
+}
+
+/** Раз в минуту (и сразу при открытии) сверяет версию фасада с сервером; нет сети — молчит. */
+@Composable
+private fun BoxScope.UpdateWatcher(pkg: FacadePackage, store: FacadeStore, onUpdated: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var serverVersion by remember(pkg.facadeId) { mutableStateOf<Long?>(null) }
+    var progress by remember { mutableStateOf<DownloadProgress?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pkg.facadeId) {
+        while (isActive) {
+            serverVersion = withContext(Dispatchers.IO) {
+                try {
+                    facadesJson.parseToJsonElement(FacadesApi.getText(FacadesApi.sceneJsonUrl(pkg.facadeId)))
+                        .jsonObject["version"]?.jsonPrimitive?.longOrNull
+                } catch (e: Exception) {
+                    null
+                }
+            } ?: serverVersion
+            delay(60_000)
+        }
+    }
+    val newer = serverVersion?.let { it > pkg.version } == true
+    if (!newer && progress == null) return
+    Column(
+        Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 96.dp, start = 12.dp, end = 12.dp)
+            .widthIn(max = 420.dp).fillMaxWidth().background(Color(0xE61B5E20), RoundedCornerShape(12.dp)).padding(12.dp)
+    ) {
+        val p = progress
+        if (p == null) {
+            Text("Фасад обновился: новые модели или сцены.", color = Color.White, fontSize = 14.sp)
+            error?.let { Text(it, color = Color(0xFFFFCDD2), fontSize = 12.sp) }
+            TextButton(onClick = {
+                error = null
+                progress = DownloadProgress(0, 0, 0, 0)
+                scope.launch {
+                    try {
+                        store.download(pkg.facadeId) { d -> scope.launch { progress = d } }
+                        progress = null
+                        onUpdated()
+                    } catch (e: Exception) {
+                        progress = null
+                        error = "Не получилось скачать: нет связи. Попробуйте ещё раз."
+                    }
+                }
+            }) { Text("Обновить сейчас", color = Color.White, fontWeight = FontWeight.Bold) }
+        } else {
+            Text(
+                if (p.fileCount == 0) "Загрузка обновления: готовимся…" else "Загрузка обновления ${p.percent}% · файл ${p.fileIndex} из ${p.fileCount}",
+                color = Color.White, fontSize = 14.sp
+            )
+            LinearProgressIndicator(progress = { p.percent / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+        }
+    }
 }
 
 @Composable
