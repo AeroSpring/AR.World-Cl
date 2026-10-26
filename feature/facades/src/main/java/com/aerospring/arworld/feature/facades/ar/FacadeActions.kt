@@ -29,7 +29,10 @@ import androidx.compose.ui.unit.dp
 import com.aerospring.arworld.core.data.model.AdMarking
 import com.aerospring.arworld.feature.facades.data.FacadeCounter
 import com.aerospring.arworld.feature.facades.data.facadesJson
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -50,7 +53,16 @@ internal sealed class FacadeAction(open val label: String?) {
         val erid: String?,
         /** Строка маркировки карточки; null — берётся строка сцены. */
         val ad: AdMarking?,
-        override val label: String?
+        override val label: String?,
+        /** Какой стороной модель повёрнута при открытии, градусы X/Y/Z; null — как в файле. */
+        val rotation: List<Float>? = null,
+        /** Анимация: номер и как играть (loop | once | none); null — первая по кругу. */
+        val animIndex: Int? = null,
+        val animMode: String? = null,
+        /** Светлый фон (по умолчанию тёмный). */
+        val lightBackground: Boolean = false,
+        /** Свои действия карточки; null — в карточке действия модели сцены. */
+        val actions: List<FacadeAction>? = null
     ) : FacadeAction(label)
 
     val buttonText: String
@@ -87,11 +99,22 @@ internal fun parseActions(list: List<JsonObject>, aiEnabled: Boolean): List<Faca
             val id = o.str("assetId")
             val url = o.str("assetUrl")
             if (id == null || url == null) null
-            else FacadeAction.Detail(
-                id, url, o.str("title"), o.str("assetTitle"), o.str("text"), o.str("erid"),
-                o["ad"]?.let { runCatching { facadesJson.decodeFromJsonElement(AdMarking.serializer(), it) }.getOrNull() },
-                label
-            )
+            else {
+                val anim = o["animation"] as? JsonObject
+                FacadeAction.Detail(
+                    id, url, o.str("title"), o.str("assetTitle"), o.str("text"), o.str("erid"),
+                    o["ad"]?.let { runCatching { facadesJson.decodeFromJsonElement(AdMarking.serializer(), it) }.getOrNull() },
+                    label,
+                    rotation = (o["rotation"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.floatOrNull }?.takeIf { it.size == 3 },
+                    animIndex = anim?.get("index")?.jsonPrimitive?.intOrNull,
+                    animMode = anim?.get("mode")?.jsonPrimitive?.contentOrNull,
+                    lightBackground = o.str("background") == "light",
+                    // Свои действия карточки — без вложенных карточек.
+                    actions = (o["actions"] as? JsonArray)?.mapNotNull { it as? JsonObject }
+                        ?.let { list -> parseActions(list, aiEnabled).filter { it !is FacadeAction.Detail } }
+                        ?.takeIf { it.isNotEmpty() }
+                )
+            }
         }
         else -> null
     }

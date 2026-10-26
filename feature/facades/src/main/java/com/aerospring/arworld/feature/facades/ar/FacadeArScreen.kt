@@ -468,7 +468,7 @@ private fun FacadeArContent(
             is FacadeAction.Detail -> {
                 val cardTarget = StatTarget(action.assetId, action.erid ?: scene?.erid)
                 count(cardTarget, FacadeCounter.CARD_OPEN)
-                openCard = OpenCard(action, cardTarget, modelActions.filter { it !is FacadeAction.Detail })
+                openCard = OpenCard(action, cardTarget, action.actions ?: modelActions.filter { it !is FacadeAction.Detail })
             }
             is FacadeAction.Ai -> { chatTarget = target; chatOpen = true }
             else -> if (launchExternal(context, action)) action.counter()?.let { count(target, it) }

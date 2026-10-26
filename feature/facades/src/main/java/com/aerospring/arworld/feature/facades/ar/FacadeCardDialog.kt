@@ -40,6 +40,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.aerospring.arworld.core.data.model.AdMarking
 import io.github.sceneview.SceneView
+import io.github.sceneview.SurfaceType
+import io.github.sceneview.math.Rotation
+import io.github.sceneview.node.ModelNode as ModelNodeImpl
+import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.isActive
 import io.github.sceneview.model.ModelInstance
 import com.google.android.filament.Engine
 import io.github.sceneview.loaders.ModelLoader
@@ -74,8 +79,8 @@ internal fun FacadeCardDialog(
                 }
             ) { inner ->
                 Column(Modifier.fillMaxSize().padding(inner)) {
-                    Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFF1E1F22))) {
-                        CardModel(file, engine, modelLoader)
+                    Box(Modifier.fillMaxWidth().weight(1f).background(if (card.lightBackground) Color(0xFFF1F1F1) else Color(0xFF1E1F22))) {
+                        CardModel(file, engine, modelLoader, card)
                     }
                     Column(
                         Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())
@@ -103,7 +108,7 @@ internal fun FacadeCardDialog(
 }
 
 @Composable
-private fun CardModel(file: File, engine: Engine, modelLoader: ModelLoader) {
+private fun CardModel(file: File, engine: Engine, modelLoader: ModelLoader, card: FacadeAction.Detail) {
     var instance by remember(file) { mutableStateOf<ModelInstance?>(null) }
     var failed by remember(file) { mutableStateOf(false) }
     LaunchedEffect(file) {
@@ -115,24 +120,56 @@ private fun CardModel(file: File, engine: Engine, modelLoader: ModelLoader) {
         }
         failed = instance == null
     }
+    var node by remember(file) { mutableStateOf<ModelNodeImpl?>(null) }
+    val r = card.rotation
     SceneView(
         modifier = Modifier.fillMaxSize(),
+        // Прозрачный вывод поверх фона карточки (тёмного или светлого) — нужен TextureView.
+        surfaceType = SurfaceType.TextureSurface,
+        isOpaque = false,
         engine = engine,
         modelLoader = modelLoader,
         autoFitContent = true
     ) {
         instance?.let { inst ->
             // Любой размер карточки — в «единичный» кубик по центру, камера кружит вокруг.
-            ModelNode(modelInstance = inst, autoAnimate = true, scaleToUnits = 1f, centerOrigin = io.github.sceneview.math.Position(0f, 0f, 0f))
+            ModelNode(
+                modelInstance = inst, autoAnimate = false, scaleToUnits = 1f,
+                centerOrigin = io.github.sceneview.math.Position(0f, 0f, 0f),
+                rotation = if (r != null) Rotation(r[0], r[1], r[2]) else Rotation(0f, 0f, 0f),
+                apply = { node = this }
+            )
+        }
+    }
+    // Анимация по номеру с ручным временем, как у моделей сцены: «не запускать», «один раз», «по кругу».
+    LaunchedEffect(node, card.animIndex, card.animMode) {
+        val n = node ?: return@LaunchedEffect
+        if (card.animMode == "none") return@LaunchedEffect
+        val index = card.animIndex ?: 0
+        val animator = n.animator
+        if (index < 0 || index >= animator.animationCount) return@LaunchedEffect
+        val loop = card.animMode != "once"
+        val duration = animator.getAnimationDuration(index)
+        val start = withFrameNanos { it }
+        while (isActive) {
+            val elapsed = withFrameNanos { (it - start) / 1_000_000_000f }
+            val t = when {
+                duration <= 0f -> 0f
+                loop -> elapsed % duration
+                else -> elapsed.coerceAtMost(duration)
+            }
+            animator.applyAnimation(index, t)
+            animator.updateBoneMatrices()
+            if (!loop && elapsed >= duration) break
         }
     }
     when {
         failed -> Text(
-            "Карточка не открылась", color = Color.White,
+            "Карточка не открылась", color = if (card.lightBackground) Color.Black else Color.White,
             modifier = Modifier.fillMaxSize().padding(24.dp), fontSize = 14.sp
         )
         instance == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color.White)
+            CircularProgressIndicator(color = if (card.lightBackground) Color.DarkGray else Color.White)
         }
     }
 }
