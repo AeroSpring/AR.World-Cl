@@ -28,6 +28,20 @@ android {
         manifestPlaceholders["arcoreApiKey"] = localProperties.getProperty("ARCORE_API_KEY", "")
     }
 
+    // Две сборки из одного кода (одинаковый пакет и ключ — обновляют друг друга):
+    //  site    — для сайта: обновление скачивается внутри приложения с процентами и ставится (как было);
+    //  rustore — для RuStore: без разрешения на установку пакетов, обновление через RuStore.
+    flavorDimensions += "store"
+    productFlavors {
+        create("site") {
+            dimension = "store"
+            isDefault = true // Run ▶ в Android Studio по умолчанию собирает сборку для сайта
+        }
+        create("rustore") {
+            dimension = "store"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

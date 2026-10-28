@@ -37,6 +37,9 @@ import kotlinx.coroutines.launch
 /** Политика обработки ПД — постоянный адрес действующей редакции на сайте (текст меняется на сайте, без выпуска приложения). */
 private const val PRIVACY_POLICY_URL = "https://ar-to-business.ru/documents/privacy-policy/"
 
+/** Страница приложения в RuStore (открывается в приложении RuStore, если оно установлено, иначе в браузере). */
+private const val RUSTORE_APP_URL = "https://www.rustore.ru/catalog/app/com.aerospring.arworld"
+
 private sealed class ScreenState {
     object Idle : ScreenState()
     object Checking : ScreenState()
@@ -52,7 +55,9 @@ private sealed class ScreenState {
 fun AboutScreen(
     currentVersionName: String,
     currentVersionCode: Int,
-    onBackClick: () -> Unit
+    onBackClick: () -> Unit,
+    /** true — сборка для RuStore: обновление через RuStore. false (по умолчанию) — сборка для сайта: скачивание с процентами и установка, как было. */
+    updateViaRuStore: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -110,19 +115,33 @@ fun AboutScreen(
                     is ScreenState.Available -> {
                         Text("Доступна версия ${s.versionName}")
                         s.notes?.let { Text(it) }
-                        Button(onClick = {
-                            state = ScreenState.Downloading(0)
-                            scope.launch {
-                                ApkDownloader.download(context, s.apkUrl).collect { downloadState ->
-                                    when (downloadState) {
-                                        is ApkDownloadState.Progress -> state = ScreenState.Downloading(downloadState.percent, downloadState.hint)
-                                        is ApkDownloadState.Done -> installApk(context, downloadState.uri)
-                                        is ApkDownloadState.Error -> state = ScreenState.DownloadError(downloadState.message)
+                        if (updateViaRuStore) {
+                            Button(onClick = {
+                                try {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(RUSTORE_APP_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                } catch (e: Exception) {
+                                    // Нет ни RuStore, ни браузера — ничего не делаем.
+                                }
+                            }) {
+                                Text("Обновить в RuStore")
+                            }
+                        } else {
+                            Button(onClick = {
+                                state = ScreenState.Downloading(0)
+                                scope.launch {
+                                    ApkDownloader.download(context, s.apkUrl).collect { downloadState ->
+                                        when (downloadState) {
+                                            is ApkDownloadState.Progress -> state = ScreenState.Downloading(downloadState.percent, downloadState.hint)
+                                            is ApkDownloadState.Done -> installApk(context, downloadState.uri)
+                                            is ApkDownloadState.Error -> state = ScreenState.DownloadError(downloadState.message)
+                                        }
                                     }
                                 }
+                            }) {
+                                Text("Обновить")
                             }
-                        }) {
-                            Text("Обновить")
                         }
                     }
                     is ScreenState.Downloading -> {

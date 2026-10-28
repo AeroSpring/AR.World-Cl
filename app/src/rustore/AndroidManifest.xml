@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Сборка для RuStore: убираем разрешение на установку пакетов (RuStore его не пропускает).
+     Обновление в этой сборке идёт через RuStore (кнопка «Обновить в RuStore» в «О программе»). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+
+</manifest>

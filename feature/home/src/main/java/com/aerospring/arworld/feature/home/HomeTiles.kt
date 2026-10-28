@@ -42,7 +42,7 @@ val homeTiles = listOf(
     ),
     HomeTile(
         id = "ar_indoor_guide",
-        title = "Путеводитель внутри зданий",
+        title = "Путеводитель по ТЦ",
         imageRes = R.drawable.tile_ar_indoor_guide,
         route = null,
         launchDateMillis = DEFAULT_LAUNCH_DATE_MILLIS

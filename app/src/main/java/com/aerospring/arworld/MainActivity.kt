@@ -56,7 +56,8 @@ private fun ArWorldNavHost(
             AboutScreen(
                 currentVersionName = BuildConfig.VERSION_NAME,
                 currentVersionCode = BuildConfig.VERSION_CODE,
-                onBackClick = { navController.popBackStack() }
+                onBackClick = { navController.popBackStack() },
+                updateViaRuStore = BuildConfig.FLAVOR == "rustore"
             )
         }
         composable(AR_BUSINESS_CARDS_ROUTE) {
