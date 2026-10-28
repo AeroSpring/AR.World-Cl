@@ -21,15 +21,22 @@ android {
         applicationId = "com.aerospring.arworld"
         minSdk = 26 // ARCore требует минимум 24, берём 26 с запасом под современные API
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.1.17"
+        versionCode = 18
+        versionName = "0.1.18"
 
+        manifestPlaceholders["appLabel"] = "AR.Мир"
         manifestPlaceholders["arcoreApiKey"] = localProperties.getProperty("ARCORE_API_KEY", "")
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+        }
+        // Стенд из Android Studio (Run ▶) — отдельное приложение «AR.Мир (стенд)».
+        // Ставится рядом с версией из RuStore/с сайта и не вытесняет её (у них разные ключи подписи).
+        debug {
+            applicationIdSuffix = ".debug"
+            manifestPlaceholders["appLabel"] = "AR.Мир (стенд)"
         }
     }
 

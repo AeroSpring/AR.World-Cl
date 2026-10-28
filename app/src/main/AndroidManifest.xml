@@ -16,7 +16,7 @@
     <application
         android:name=".ArWorldApp"
         android:allowBackup="true"
-        android:label="AR.Мир"
+        android:label="${appLabel}"
         android:theme="@style/Theme.ArWorld"
         android:icon="@mipmap/ic_launcher">
 
