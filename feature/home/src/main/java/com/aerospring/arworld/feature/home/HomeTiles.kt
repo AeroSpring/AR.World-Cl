@@ -44,8 +44,8 @@ val homeTiles = listOf(
         id = "ar_indoor_guide",
         title = "Путеводитель по ТЦ",
         imageRes = R.drawable.tile_ar_indoor_guide,
-        route = null,
-        launchDateMillis = DEFAULT_LAUNCH_DATE_MILLIS
+        route = "ar_indoor_guide",   // = GUIDE_ROUTE в :feature:guide
+        launchDateMillis = 0L
     ),
     HomeTile(
         id = "ar_navigator",

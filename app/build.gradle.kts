@@ -79,6 +79,7 @@ dependencies {
     implementation(project(":feature:where-anything-is"))
     implementation(project(":feature:furniture"))
     implementation(project(":feature:facades"))
+    implementation(project(":feature:guide"))
     implementation(project(":feature:about"))
 
     implementation(libs.androidx.core.ktx)
