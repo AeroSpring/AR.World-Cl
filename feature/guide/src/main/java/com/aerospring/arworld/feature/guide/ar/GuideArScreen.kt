@@ -313,7 +313,9 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
             }
         ) {
             val a = anchor
-            if (a != null) {
+            // key(a): лист по пути переставил здание (новый якорь) — дорожку и столбик создаём заново
+            // под новым якорем. Без этого они оставались детьми старого, уже отпущенного якоря и пропадали.
+            if (a != null) key(a) {
                 AnchorNode(anchor = a) {
                     crumbs.forEachIndexed { i, p ->
                         key(routeVersion, i) {
