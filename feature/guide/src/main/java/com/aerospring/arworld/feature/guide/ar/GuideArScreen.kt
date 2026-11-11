@@ -106,6 +106,14 @@ private const val CAMERA_ABOVE_FLOOR_MIN_M = 0.6f
 /** Не узнана картинка за это время — подсказка, как навести камеру. */
 private const val NOT_FOUND_HINT_MS = 12_000L
 
+/** Камера не ведёт положение дольше этого — считаем, что телефон «потерял место». */
+private const val LOST_AFTER_MS = 1_500L
+
+/** Состояние «где я»: всё хорошо / потерял место / нашёлся сам, но листом не подтверждён. */
+private const val PLACE_OK = 0
+private const val PLACE_LOST = 1
+private const val PLACE_UNSURE = 2
+
 /**
  * AR-путеводитель по зданию. Всё — из копии на телефоне, сеть нужна только для статистики.
  *
@@ -116,6 +124,9 @@ private const val NOT_FOUND_HINT_MS = 12_000L
  *  3. «Куда идём?» → поиск места → кратчайший маршрут от ближайшей к телефону точки графа
  *     до входа в место; на полу — дорожка из квадратиков, у входа — зелёный столбик.
  *  4. Подошли ближе 1,5 м — «Вы пришли».
+ *  5. Телефон потерял, где он (однотонный блестящий пол, эскалатор, быстрые движения): дорожку
+ *     прячем, звучит короткий сигнал и просьба навести камеру на ближайшую опору. Нашёлся сам —
+ *     дорожка возвращается, но первая же увиденная опора снова ставит здание на место.
  */
 @Composable
 internal fun GuideArScreen(bundle: GuideBundle, store: GuideStore, onExit: () -> Unit) {
@@ -163,6 +174,11 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
     var sessionError by remember { mutableStateOf<String?>(null) }
     var notFoundLong by remember { mutableStateOf(false) }
     val startedAt = remember { System.currentTimeMillis() }
+
+    // ── Потерял место? ──  placeState — для экрана, placeFlag/notTrackingSince — для обработки кадров.
+    var placeState by remember { mutableIntStateOf(PLACE_OK) }
+    val placeFlag = remember { IntArray(1) }
+    val notTrackingSince = remember { LongArray(1) }
 
     // Где телефон в здании: (x по плану, высота, y по плану) — обновляется несколько раз в секунду.
     var camInBuilding by remember { mutableStateOf<FloatArray?>(null) }
@@ -282,6 +298,35 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
             onSessionFailed = { e -> sessionError = "AR не запустилась: ${e.javaClass.simpleName}" },
             onSessionUpdated = { session: Session, frame: Frame ->
                 frameCounter[0]++
+                val now = System.currentTimeMillis()
+                val camTracking = frame.camera.trackingState == TrackingState.TRACKING
+                if (camTracking) notTrackingSince[0] = 0L else if (notTrackingSince[0] == 0L) notTrackingSince[0] = now
+                anchor?.let { cur ->
+                    val next = when {
+                        cur.trackingState == TrackingState.STOPPED -> PLACE_LOST
+                        !camTracking && now - notTrackingSince[0] > LOST_AFTER_MS -> PLACE_LOST
+                        camTracking && placeFlag[0] == PLACE_LOST -> PLACE_UNSURE
+                        else -> placeFlag[0]
+                    }
+                    if (next != placeFlag[0]) {
+                        if (next == PLACE_LOST) {
+                            GuideSound.lost()
+                            stabilizer.reset(); stabRef[0] = null   // старые замеры листа больше не годятся
+                            Log.i(TAG, "Место потеряно")
+                        }
+                        placeFlag[0] = next
+                        placeState = next
+                    }
+                }
+                fun placed(n: Anchor, id: String) {
+                    anchor = n
+                    anchorRefId = id
+                    if (placeFlag[0] != PLACE_OK) {
+                        placeFlag[0] = PLACE_OK
+                        placeState = PLACE_OK
+                        GuideSound.found()
+                    }
+                }
                 val visible = session.getAllTrackables(AugmentedImage::class.java).filter {
                     it.trackingState == TrackingState.TRACKING &&
                         it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
@@ -299,15 +344,16 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                         (cam.tx() - c.tx()).let { it * it } + (cam.ty() - c.ty()).let { it * it } + (cam.tz() - c.tz()).let { it * it }
                     )
                     val current = anchor
-                    if (current == null || img.name != anchorRefId) {
-                        // Первый лист — или увидели другой лист: ставим здание по нему (снимает накопленную ошибку).
-                        stabilizer.firstPose(imgDist)?.let { p -> replaceAnchor(session, p, current, img.name, imgDist) { n, id -> anchor = n; anchorRefId = id } }
+                    if (current == null || img.name != anchorRefId || placeFlag[0] != PLACE_OK) {
+                        // Первый лист, другой лист или место было потеряно: ставим здание по нему заново
+                        // (снимает накопленную ошибку).
+                        stabilizer.firstPose(imgDist)?.let { p -> replaceAnchor(session, p, current, img.name, imgDist, ::placed) }
                     } else if (frameCounter[0] % 30 == 0 && current.trackingState == TrackingState.TRACKING) {
-                        stabilizer.correction(current.pose, imgDist)?.let { p -> replaceAnchor(session, p, current, img.name, imgDist) { n, id -> anchor = n; anchorRefId = id } }
+                        stabilizer.correction(current.pose, imgDist)?.let { p -> replaceAnchor(session, p, current, img.name, imgDist, ::placed) }
                     }
                 }
                 val current = anchor
-                if (frameCounter[0] % 10 == 0 && current != null && frame.camera.trackingState == TrackingState.TRACKING) {
+                if (frameCounter[0] % 10 == 0 && current != null && camTracking && current.trackingState == TrackingState.TRACKING) {
                     camInBuilding = current.pose.inverse().transformPoint(frame.camera.pose.translation)
                 }
             }
@@ -315,7 +361,8 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
             val a = anchor
             // key(a): лист по пути переставил здание (новый якорь) — дорожку и столбик создаём заново
             // под новым якорем. Без этого они оставались детьми старого, уже отпущенного якоря и пропадали.
-            if (a != null) key(a) {
+            // Место потеряно — дорожку не рисуем: она может стоять не там и увести не туда.
+            if (a != null && placeState != PLACE_LOST) key(a) {
                 AnchorNode(anchor = a) {
                     crumbs.forEachIndexed { i, p ->
                         key(routeVersion, i) {
@@ -369,7 +416,17 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                     if (notFoundLong) "Лист пока не узнан. Подойдите на 1–2 метра и наведите камеру прямо на лист, чтобы он был виден целиком."
                     else "Наведите камеру на лист-опору — например, у входа."
                 )
-                StartHints(refs)
+                StartHints(refs, onlyStart = true)
+            }
+            if (anchor != null && placeState == PLACE_LOST) {
+                Bubble(
+                    "Телефон потерял, где вы. Наведите камеру на ближайший лист-опору — дорожка вернётся.",
+                    warning = true
+                )
+                val floorNow = camInBuilding?.let { floorIdAt(it[1]) }
+                StartHints(refs.filter { it.first.floorId == floorNow }.ifEmpty { refs }, onlyStart = false)
+            } else if (anchor != null && placeState == PLACE_UNSURE) {
+                Bubble("Если дорожка сместилась — наведите камеру на ближайший лист-опору.")
             }
             val place = destination
             if (anchor != null && place == null) {
@@ -433,8 +490,8 @@ private fun dist3(a: FloatArray, b: FloatArray): Float {
 
 /** Картинки стартовых опор — чтобы человек знал, что искать глазами. */
 @Composable
-private fun StartHints(refs: List<Pair<GuideAnchor, Bitmap>>) {
-    val shown = refs.filter { it.first.role == "start" }.ifEmpty { refs }.take(3)
+private fun StartHints(refs: List<Pair<GuideAnchor, Bitmap>>, onlyStart: Boolean) {
+    val shown = (if (onlyStart) refs.filter { it.first.role == "start" }.ifEmpty { refs } else refs).take(3)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         shown.forEach { (a, bmp) ->
             val image = remember(bmp) { bmp.asImageBitmap() }
@@ -551,9 +608,10 @@ private fun SearchDialog(
 }
 
 @Composable
-private fun Bubble(text: String) {
+private fun Bubble(text: String, warning: Boolean = false) {
     Text(
-        text, color = Color.White, fontSize = 14.sp,
-        modifier = Modifier.background(Color(0xB3000000), RoundedCornerShape(12.dp)).padding(12.dp)
+        text, color = if (warning) Color.Black else Color.White, fontSize = 14.sp,
+        fontWeight = if (warning) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier.background(if (warning) Color(0xF2FFC107) else Color(0xB3000000), RoundedCornerShape(12.dp)).padding(12.dp)
     )
 }
