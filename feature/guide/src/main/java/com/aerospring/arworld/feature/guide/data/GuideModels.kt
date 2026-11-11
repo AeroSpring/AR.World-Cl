@@ -61,7 +61,9 @@ internal data class GuideNode(
     val x: Float,
     val y: Float,
     val kind: String = "corridor",
-    val name: String = ""
+    val name: String = "",
+    /** Высота над полом своего этажа — у точек на лестнице (дорожка идёт по ступеням); обычно 0. */
+    val heightM: Float = 0f
 )
 
 @Serializable

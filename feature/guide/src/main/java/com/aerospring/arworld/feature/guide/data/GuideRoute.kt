@@ -66,9 +66,12 @@ internal fun findRoute(b: GuideBundle, start: String, goal: String, accessibleOn
     return GuideRoute(path, length, changes)
 }
 
-/** Ближайшая точка графа на этаже к месту на плане (x, y в метрах). */
+/**
+ * Ближайшая точка графа на этаже к месту на плане (x, y в метрах).
+ * Точки посреди лестницы (высота над полом) не берём: маршрут начинается с пола.
+ */
 internal fun nearestNode(b: GuideBundle, floorId: String, x: Float, y: Float): GuideNode? =
-    b.nodes.filter { it.floorId == floorId }.minByOrNull { hypot(it.x - x, it.y - y) }
+    b.nodes.filter { it.floorId == floorId && it.heightM < 0.3f }.minByOrNull { hypot(it.x - x, it.y - y) }
 
 /** Поиск места «по задаче»: название, категория, слова для поиска. Пустой запрос — все. */
 internal fun searchPlaces(b: GuideBundle, query: String): List<GuidePlace> {

@@ -231,7 +231,7 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
     // Дорожка маршрута: точки через каждые 35 см вдоль проходов (на лестнице — поднимаются вместе с ней).
     val crumbs = remember(route, routeVersion) {
         val r = route ?: return@remember emptyList<Position>()
-        val pts = r.nodeIds.mapNotNull { id -> bundle.node(id)?.let { n -> floatArrayOf(n.x, bundle.elevation(n.floorId) + 0.02f, n.y) } }
+        val pts = r.nodeIds.mapNotNull { id -> bundle.node(id)?.let { n -> floatArrayOf(n.x, bundle.elevation(n.floorId) + n.heightM + 0.02f, n.y) } }
         val length = pts.zipWithNext().sumOf { (a, b) -> dist3(a, b).toDouble() }.toFloat()
         val step = maxOf(CRUMB_STEP_M, length / CRUMB_MAX)
         val out = ArrayList<Position>()
