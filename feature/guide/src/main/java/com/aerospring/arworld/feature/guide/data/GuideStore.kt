@@ -82,8 +82,10 @@ internal object GuideApi {
 
     fun bundleUrl(slug: String) = "$base/guide/buildings/${URLEncoder.encode(slug, "UTF-8")}/bundle"
 
-    suspend fun buildings(): List<GuideBuildingItem> = withContext(Dispatchers.IO) {
-        guideJson.decodeFromString(ListSerializer(GuideBuildingItem.serializer()), getText("$base/guide/buildings"))
+    /** Опубликованные здания. С примерным местом телефона — только те, что рядом (сервер: 50 км), ближние первыми. */
+    suspend fun buildings(lat: Double? = null, lon: Double? = null): List<GuideBuildingItem> = withContext(Dispatchers.IO) {
+        val q = if (lat != null && lon != null) "?lat=%.4f&lon=%.4f".format(java.util.Locale.US, lat, lon) else ""
+        guideJson.decodeFromString(ListSerializer(GuideBuildingItem.serializer()), getText("$base/guide/buildings$q"))
     }
 
     /** Обезличенная статистика (что искали, куда шли, дошли ли). Ошибки сети молча пропускаем. */

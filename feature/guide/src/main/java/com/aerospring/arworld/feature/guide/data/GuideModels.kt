@@ -7,7 +7,7 @@ import kotlinx.serialization.json.Json
 /**
  * «Путеводитель по ТЦ» — данные здания в том виде, как их отдаёт сервер:
  *
- *   GET /guide/buildings                → [GuideBuildingItem] — опубликованные здания
+ *   GET /guide/buildings[?lat=&lon=]    → [GuideBuildingItem] — опубликованные здания (с местом — только рядом)
  *   GET /guide/buildings/{slug}/bundle  → [GuideBundle] — всё здание одним JSON
  *
  * Координаты — метры в системе здания: x вправо, y вниз (как на поэтажном плане),
@@ -25,6 +25,9 @@ internal data class GuideBuildingItem(
     val slug: String,
     val name: String,
     val address: String = "",
+    val city: String = "",
+    /** До здания, км — если список запрошен с примерным местом телефона. */
+    val distanceKm: Double? = null,
     val bundleVersion: Long = 0
 )
 
