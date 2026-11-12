@@ -192,6 +192,13 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
     // Человек сам выбрал, у какой из одинаковых опор стоит (пока здание ещё не найдено).
     val groupChoice = remember { HashMap<String, String>() }
     var askGroup by remember { mutableStateOf<String?>(null) }
+    // Пока человек выбирает, у какой опоры стоит, — копим позы увиденной картинки: после выбора здание
+    // ставится сразу по ним, без повторного «наведите камеру».
+    val askPoses = remember { ArrayDeque<Pose>() }
+    val askPosesGroup = remember { arrayOfNulls<String>(1) }
+    val askDist = remember { FloatArray(1) }
+    // Закрыли окно выбора (кнопкой «Назад» или мимо окна) — не спрашиваем снова 10 секунд.
+    val askSuppressedUntil = remember { LongArray(1) }
 
     // ── Где здание в мире ──
     var anchor by remember { mutableStateOf<Anchor?>(null) }
@@ -379,6 +386,19 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                         GuideSound.found()
                     }
                 }
+                // Человек только что выбрал опору в «Где вы стоите?» — ставим здание по уже увиденным позам.
+                if (anchor == null) {
+                    val g = askPosesGroup[0]
+                    val chosen = g?.let { groupChoice[it] }
+                    val ibChosen = chosen?.let { imageInBuilding[it] }
+                    if (chosen != null && ibChosen != null && askPoses.isNotEmpty()) {
+                        stabilizer.reset(); stabRef[0] = chosen
+                        askPoses.forEach { stabilizer.add(GuideGeometry.buildingInWorld(it, ibChosen)) }
+                        val p = stabilizer.firstPose(askDist[0]) ?: GuideGeometry.buildingInWorld(askPoses.last(), ibChosen)
+                        replaceAnchor(session, p, null, chosen, askDist[0], ::placed)
+                        askPoses.clear(); askPosesGroup[0] = null
+                    }
+                }
                 val visible = session.getAllTrackables(AugmentedImage::class.java).filter {
                     it.trackingState == TrackingState.TRACKING &&
                         it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
@@ -397,7 +417,16 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                             dist3(floatArrayOf(p.tx(), p.ty(), p.tz()), cam)
                         }
                         else -> groupChoice[im.name]?.let { id -> list.firstOrNull { it.id == id } }
-                            ?: run { if (askGroup == null) askGroup = im.name; null }
+                            ?: run {
+                                if (askPosesGroup[0] != im.name) { askPoses.clear(); askPosesGroup[0] = im.name }
+                                askPoses.addLast(im.centerPose)
+                                while (askPoses.size > 30) askPoses.removeFirst()
+                                val cp = frame.camera.pose
+                                askDist[0] = sqrt((cp.tx() - im.centerPose.tx()).let { it * it } + (cp.ty() - im.centerPose.ty()).let { it * it } +
+                                    (cp.tz() - im.centerPose.tz()).let { it * it })
+                                if (askGroup == null && now >= askSuppressedUntil[0]) askGroup = im.name
+                                null
+                            }
                     }
                 }
                 val ib = a?.let { imageInBuilding[it.id] }
@@ -548,7 +577,7 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                 bundle = bundle,
                 options = members[g].orEmpty(),
                 onPick = { a -> groupChoice[g] = a.id; askGroup = null },
-                onDismiss = { askGroup = null }
+                onDismiss = { askGroup = null; askSuppressedUntil[0] = System.currentTimeMillis() + 10_000 }
             )
         }
         if (showHelp) {
@@ -809,8 +838,9 @@ private fun WhereAmIDialog(bundle: GuideBundle, options: List<GuideAnchor>, onPi
                 }
             }
         },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
+        // Без кнопки «Закрыть»: выбрать нужно, иначе непонятно, где человек. «Назад» или касание мимо окна —
+        // окно закрывается и 10 секунд не появляется.
+        confirmButton = {}
     )
 }
 
