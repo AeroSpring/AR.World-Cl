@@ -94,6 +94,8 @@ internal fun GuideHomeScreen(store: GuideStore, onExit: () -> Unit, onOpen: (Gui
     var cached by remember(reload) { mutableStateOf(store.cachedBundles()) }
     var loadingSlug by remember { mutableStateOf<String?>(null) }
     var progress by remember { mutableStateOf<GuideProgress?>(null) }
+    var progressAt by remember { mutableStateOf(0L) }
+    var slow by remember { mutableStateOf(false) }
     var failedSlug by remember { mutableStateOf<String?>(null) }
     var showHelp by remember { mutableStateOf(false) }
     var hasLocation by remember { mutableStateOf(GuideLocation.hasPermission(context)) }
@@ -133,9 +135,10 @@ internal fun GuideHomeScreen(store: GuideStore, onExit: () -> Unit, onOpen: (Gui
         failedSlug = null
         loadingSlug = slug
         progress = GuideProgress(0, 0)
+        progressAt = System.currentTimeMillis()
         scope.launch {
             try {
-                val b = store.download(slug) { p -> scope.launch { progress = p } }
+                val b = store.download(slug) { p -> scope.launch { progress = p; progressAt = System.currentTimeMillis() } }
                 cached = store.cachedBundles()
                 onOpen(b)
             } catch (e: Exception) {
@@ -145,6 +148,16 @@ internal fun GuideHomeScreen(store: GuideStore, onExit: () -> Unit, onOpen: (Gui
                 progress = null
             }
         }
+    }
+
+    // Скачивание стоит дольше 6 секунд — честно говорим, что связь медленная (а не «зависло»).
+    LaunchedEffect(loadingSlug) {
+        slow = false
+        while (loadingSlug != null) {
+            kotlinx.coroutines.delay(1_000)
+            slow = System.currentTimeMillis() - progressAt > 6_000
+        }
+        slow = false
     }
 
     Box(Modifier.fillMaxSize().background(Color(0xFF101014))) {
@@ -232,9 +245,11 @@ internal fun GuideHomeScreen(store: GuideStore, onExit: () -> Unit, onOpen: (Gui
                             if (loadingSlug == b.slug) {
                                 val p = progress
                                 Text(
-                                    if (p == null || p.totalFiles == 0) "Загрузка: готовимся…" else "Загрузка ${p.percent}% · файл ${p.doneFiles} из ${p.totalFiles}",
+                                    if (p == null || p.totalFiles == 0) "Загрузка: готовимся…"
+                                    else "Загрузка ${p.percent}% · файл ${minOf(p.doneFiles + 1, p.totalFiles)} из ${p.totalFiles}",
                                     color = Color.White, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)
                                 )
+                                if (slow) Text("Связь медленная — загрузка идёт, подождите немного.", color = TextDim, fontSize = 12.sp)
                                 LinearProgressIndicator(progress = { (p?.percent ?: 0) / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
                             }
                             if (failedSlug == b.slug && loadingSlug == null) {

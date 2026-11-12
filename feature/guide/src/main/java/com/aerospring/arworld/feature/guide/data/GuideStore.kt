@@ -17,8 +17,9 @@ import java.net.URLEncoder
 import kotlin.coroutines.coroutineContext
 
 /** Ход скачивания здания: для «Загрузка N%». */
-internal data class GuideProgress(val doneFiles: Int, val totalFiles: Int) {
-    val percent: Int get() = if (totalFiles > 0) (doneFiles * 100 / totalFiles).coerceIn(0, 100) else 0
+internal data class GuideProgress(val doneFiles: Int, val totalFiles: Int, val fileFraction: Float = 0f) {
+    /** С учётом доли текущего файла — полоса движется и внутри большого файла, а не прыгает по файлам. */
+    val percent: Int get() = if (totalFiles > 0) (((doneFiles + fileFraction) * 100) / totalFiles).toInt().coerceIn(0, 100) else 0
 }
 
 /**
@@ -63,7 +64,7 @@ internal class GuideStore(context: Context) {
         onProgress(GuideProgress(0, urls.size))
         urls.forEachIndexed { i, url ->
             val file = localFile(slug, url)
-            if (!file.isFile) GuideApi.downloadTo(GuideApi.absolute(url), file)
+            if (!file.isFile) GuideApi.downloadTo(GuideApi.absolute(url), file) { f -> onProgress(GuideProgress(i, urls.size, f)) }
             onProgress(GuideProgress(i + 1, urls.size))
         }
         bundleFile(slug).writeText(text)
@@ -132,7 +133,7 @@ internal object GuideApi {
     }
 
     /** Скачать во временный файл и только потом дать итоговое имя (обрыв связи не оставит «полфайла»). */
-    suspend fun downloadTo(url: String, target: File) {
+    suspend fun downloadTo(url: String, target: File, onFraction: (Float) -> Unit = {}) {
         val c = URL(url).openConnection() as HttpURLConnection
         val part = File(target.parentFile, target.name + ".part")
         try {
@@ -140,14 +141,23 @@ internal object GuideApi {
             c.readTimeout = 30_000
             val code = c.responseCode
             if (code !in 200..299) throw IOException("HTTP $code: ${target.name}")
+            val total = c.contentLengthLong
+            var got = 0L
+            var lastShown = 0L
             c.inputStream.use { input ->
                 part.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024)
+                    val buf = ByteArray(16 * 1024)
                     while (true) {
                         coroutineContext.ensureActive()
                         val n = input.read(buf)
                         if (n < 0) break
                         out.write(buf, 0, n)
+                        got += n
+                        // Показываем ход не чаще, чем через каждые ~64 КБ.
+                        if (total > 0 && got - lastShown >= 64 * 1024) {
+                            lastShown = got
+                            onFraction((got.toFloat() / total).coerceIn(0f, 1f))
+                        }
                     }
                 }
             }
