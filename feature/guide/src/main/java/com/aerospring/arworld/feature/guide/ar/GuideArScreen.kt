@@ -2,6 +2,7 @@ package com.aerospring.arworld.feature.guide.ar
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.opengl.Matrix
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
@@ -40,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -116,6 +118,16 @@ private const val NOT_FOUND_HINT_MS = 12_000L
 
 /** Камера не ведёт положение дольше этого — считаем, что телефон «потерял место». */
 private const val LOST_AFTER_MS = 1_500L
+
+/** Положение телефона в здании не обновлялось дольше этого — тоже «потерял место» (стрелка иначе застывает). */
+private const val CAM_STALE_MS = 2_500L
+
+/** Маршрут есть, а ни одного квадратика дорожки в кадре столько времени — подсказываем, что делать. */
+private const val PATH_UNSEEN_MS = 8_000L
+
+/** Дальше этого от дорожки (по плану, на своём этаже) дольше OFF_ROUTE_MS — маршрут прокладывается заново. */
+private const val OFF_ROUTE_M = 3f
+private const val OFF_ROUTE_MS = 4_000L
 
 /** Состояние «где я»: всё хорошо / потерял место / нашёлся сам, но листом не подтверждён. */
 private const val PLACE_OK = 0
@@ -214,6 +226,18 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
     var placeState by remember { mutableIntStateOf(PLACE_OK) }
     val placeFlag = remember { IntArray(1) }
     val notTrackingSince = remember { LongArray(1) }
+    // Когда последний раз обновилось положение телефона в здании (0 — ещё ни разу).
+    val camUpdatedAt = remember { LongArray(1) }
+
+    // ── Видно ли дорожку ──  pathSeenAt — когда последний раз хоть один квадратик был в кадре.
+    val pathSeenAt = remember { LongArray(1) }
+    var pathUnseen by remember { mutableStateOf(false) }
+    // Для обработки кадров: текущая дорожка и «идём ли по маршруту» (кадры обрабатываются вне композиции).
+    val crumbsRef = remember { arrayOfNulls<List<Position>>(1) }
+    val routeActiveRef = remember { BooleanArray(1) }
+    // Отошёл от дорожки: с какого времени; и короткое сообщение «проложил заново».
+    val offRouteSince = remember { LongArray(1) }
+    var notice by remember { mutableStateOf<String?>(null) }
 
     // Где телефон в здании: (x по плану, высота, y по плану) — обновляется несколько раз в секунду.
     var camInBuilding by remember { mutableStateOf<FloatArray?>(null) }
@@ -245,6 +269,10 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
     fun buildRoute(place: GuidePlace) {
         routeMessage = null
         arrived = false
+        // Новый маршрут — заново ждём, увидит ли человек дорожку.
+        pathSeenAt[0] = System.currentTimeMillis()
+        pathUnseen = false
+        offRouteSince[0] = 0L
         val goal = place.entranceNodeId
         if (camInBuilding == null || goal == null) {
             routeMessage = "Сначала наведите камеру на лист-опору."
@@ -326,12 +354,48 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
         turnToRoute(crumbs, cam, fwd)
     }
 
+    // Кадры обрабатываются вне композиции — отдаём им текущую дорожку и «идём ли по маршруту».
+    val routeActive = route != null && destination != null && !arrived
+    SideEffect {
+        crumbsRef[0] = crumbs
+        routeActiveRef[0] = routeActive
+        if (!routeActive && pathUnseen) pathUnseen = false
+    }
+
+    // Ушёл от дорожки дальше 3 м и не возвращается 4 секунды — прокладываем маршрут заново отсюда
+    // и говорим об этом (как навигатор в машине).
+    LaunchedEffect(camInBuilding, routeVersion, arrived) {
+        val cam = camInBuilding ?: return@LaunchedEffect
+        val place = destination ?: return@LaunchedEffect
+        if (route == null || arrived || placeState != PLACE_OK || crumbs.isEmpty()) { offRouteSince[0] = 0L; return@LaunchedEffect }
+        val d = distanceToPath(crumbs, cam)
+        val now = System.currentTimeMillis()
+        if (d == null || d <= OFF_ROUTE_M) { offRouteSince[0] = 0L; return@LaunchedEffect }
+        if (offRouteSince[0] == 0L) { offRouteSince[0] = now; return@LaunchedEffect }
+        if (now - offRouteSince[0] >= OFF_ROUTE_MS) {
+            Log.i(TAG, "Отошли от дорожки на %.1f м — маршрут проложен заново".format(d))
+            buildRoute(place)
+            notice = "Вы отошли от дорожки — я проложил маршрут заново от того места, где вы сейчас."
+            GuideSound.found()
+        }
+    }
+    LaunchedEffect(notice) {
+        if (notice != null) { delay(6_000); notice = null }
+    }
+
     // Узлы, созданные для текущего якоря и маршрута: SceneView «досылает» новый узел в Filament
     // после переприсваивания isVisible (особенность, найденная в Фасадах и Мебели).
     val createdNodes = remember(anchor, routeVersion) { mutableListOf<Node>() }
+    // Узлы создаются не мгновенно: одного «пинка» через 120 мс бывает мало — тогда дорожка есть, а на экране
+    // её нет (так было на видео 14.11 после подправки по листу). Поэтому подталкиваем несколько раз,
+    // а дальше — раз в 2 секунды, пока жив этот якорь и маршрут.
     LaunchedEffect(anchor, routeVersion) {
-        delay(120)
-        createdNodes.toList().forEach { it.isVisible = false; it.isVisible = true }
+        var n = 0
+        while (isActive) {
+            delay(when (n) { 0 -> 120L; 1 -> 400L; 2 -> 1_000L; else -> 2_000L })
+            createdNodes.toList().forEach { it.isVisible = false; it.isVisible = true }
+            n++
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -361,9 +425,13 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                 val camTracking = frame.camera.trackingState == TrackingState.TRACKING
                 if (camTracking) notTrackingSince[0] = 0L else if (notTrackingSince[0] == 0L) notTrackingSince[0] = now
                 anchor?.let { cur ->
+                    val stale = camUpdatedAt[0] != 0L && now - camUpdatedAt[0] > CAM_STALE_MS
                     val next = when {
                         cur.trackingState == TrackingState.STOPPED -> PLACE_LOST
                         !camTracking && now - notTrackingSince[0] > LOST_AFTER_MS -> PLACE_LOST
+                        // Камера вроде ведёт, а положение в здании давно не обновляется (якорь не ведётся):
+                        // стрелка застыла бы на месте — честно говорим, что место потеряно.
+                        stale -> PLACE_LOST
                         camTracking && placeFlag[0] == PLACE_LOST -> PLACE_UNSURE
                         else -> placeFlag[0]
                     }
@@ -371,7 +439,8 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                         if (next == PLACE_LOST) {
                             GuideSound.lost()
                             stabilizer.reset(); stabRef[0] = null   // старые замеры листа больше не годятся
-                            Log.i(TAG, "Место потеряно")
+                            Log.i(TAG, "Место потеряно: якорь ${cur.trackingState}, камера ${frame.camera.trackingState}, " +
+                                "положение не обновлялось ${if (camUpdatedAt[0] == 0L) "—" else "${now - camUpdatedAt[0]} мс"}")
                         }
                         placeFlag[0] = next
                         placeState = next
@@ -380,6 +449,7 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                 fun placed(n: Anchor, id: String) {
                     anchor = n
                     anchorRefId = id
+                    camUpdatedAt[0] = System.currentTimeMillis()
                     if (placeFlag[0] != PLACE_OK) {
                         placeFlag[0] = PLACE_OK
                         placeState = PLACE_OK
@@ -462,6 +532,25 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                     }
                     val len = hypot(fx, fy)
                     if (len > 1e-3f) camForward = floatArrayOf(fx / len, fy / len)
+                    camUpdatedAt[0] = now
+
+                    // Видит ли человек дорожку: есть ли в кадре хоть один квадратик в пределах 8 м.
+                    val list = crumbsRef[0].orEmpty()
+                    if (routeActiveRef[0] && placeFlag[0] == PLACE_OK && list.isNotEmpty()) {
+                        val camB = camInBuilding
+                        if (camB != null && pathInView(list, camB, current.pose, frame)) {
+                            pathSeenAt[0] = now
+                            if (pathUnseen) pathUnseen = false
+                        } else if (!pathUnseen && pathSeenAt[0] != 0L && now - pathSeenAt[0] > PATH_UNSEEN_MS) {
+                            pathUnseen = true
+                            GuideSound.lost()
+                            val d = camB?.let { distanceToPath(list, it) }
+                            Log.i(TAG, "Дорожки нет в кадре ${now - pathSeenAt[0]} мс: опора $anchorRefId, до дорожки ${d?.let { "%.1f м".format(it) } ?: "—"}, " +
+                                "телефон в здании ${camB?.joinToString { "%.2f".format(it) }}")
+                        }
+                    } else {
+                        pathSeenAt[0] = now
+                    }
                 }
             }
         ) {
@@ -534,7 +623,17 @@ private fun GuideArContent(bundle: GuideBundle, refs: List<Pair<GuideAnchor, Bit
                 StartHints(groupRefs.filter { (a, _) -> members[groupOf.getValue(a.id)].orEmpty().any { it.floorId == floorNow } }.ifEmpty { groupRefs }, onlyStart = false)
             } else if (anchor != null && placeState == PLACE_UNSURE) {
                 Bubble("Если дорожка сместилась — наведите камеру на ближайший лист-опору.")
+            } else if (anchor != null && pathUnseen && destination != null && !arrived) {
+                // Маршрут есть, а дорожки в кадре давно нет: человек не должен оставаться в неведении.
+                Bubble(
+                    "Не вижу дорожку в кадре. Опустите телефон к полу и повернитесь по стрелке ниже. " +
+                        "Не появилась — наведите камеру на ближайший лист-опору: я поставлю дорожку заново.",
+                    warning = true
+                )
+                val floorNow = camInBuilding?.let { floorIdAt(it[1]) }
+                StartHints(groupRefs.filter { (a, _) -> members[groupOf.getValue(a.id)].orEmpty().any { it.floorId == floorNow } }.ifEmpty { groupRefs }, onlyStart = false)
             }
+            notice?.let { Bubble(it) }
             val place = destination
             if (anchor != null && place == null) {
                 Button(onClick = { searchOpen = true }, modifier = Modifier.fillMaxWidth()) { Text("Куда идём?") }
@@ -710,6 +809,47 @@ private fun turnToRoute(crumbs: List<Position>, cam: FloatArray, fwd: FloatArray
     val cross = fwd[0] * ty - fwd[1] * tx
     val dot = fwd[0] * tx + fwd[1] * ty
     return Math.toDegrees(atan2(cross, dot).toDouble()).toFloat()
+}
+
+/**
+ * Расстояние по плану от телефона до ближайшего квадратика дорожки на его этаже, м.
+ * На этаже телефона дорожки нет — null (не по чему судить).
+ */
+private fun distanceToPath(crumbs: List<Position>, cam: FloatArray): Float? {
+    var best = Float.MAX_VALUE
+    for (p in crumbs) {
+        if (abs(p.y - (cam[1] - 1.3f)) > 2.5f) continue   // другой этаж
+        val d = hypot(p.x - cam[0], p.z - cam[2])
+        if (d < best) best = d
+    }
+    return if (best == Float.MAX_VALUE) null else best
+}
+
+/**
+ * Есть ли в кадре хоть один квадратик дорожки не дальше 8 м от телефона. Точки дорожки — в координатах
+ * здания: переводим в мир через якорь здания и проецируем матрицами камеры этого кадра (как в «Где что
+ * находится»). Нижнюю треть экрана не считаем: там панель маршрута, квадратик под ней не виден.
+ */
+private fun pathInView(crumbs: List<Position>, camB: FloatArray, buildingPose: Pose, frame: Frame): Boolean {
+    val view = FloatArray(16)
+    val proj = FloatArray(16)
+    val vp = FloatArray(16)
+    frame.camera.getViewMatrix(view, 0)
+    frame.camera.getProjectionMatrix(proj, 0, 0.05f, 100f)
+    Matrix.multiplyMM(vp, 0, proj, 0, view, 0)
+    val v = FloatArray(4)
+    val out = FloatArray(4)
+    for (p in crumbs) {
+        if (hypot(p.x - camB[0], p.z - camB[2]) > 8f) continue
+        val w = buildingPose.transformPoint(floatArrayOf(p.x, p.y, p.z))
+        v[0] = w[0]; v[1] = w[1]; v[2] = w[2]; v[3] = 1f
+        Matrix.multiplyMV(out, 0, vp, 0, v, 0)
+        if (out[3] <= 0.05f) continue                       // за спиной
+        val x = out[0] / out[3]
+        val y = out[1] / out[3]
+        if (x in -0.95f..0.95f && y in -0.45f..0.95f) return true
+    }
+    return false
 }
 
 /** «лестнице» / «эскалатору» / «лифту» — по первому переходу между этажами в маршруте. */
