@@ -21,8 +21,8 @@ android {
         applicationId = "com.aerospring.arworld"
         minSdk = 26 // ARCore требует минимум 24, берём 26 с запасом под современные API
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.1.18"
+        versionCode = 19
+        versionName = "0.1.19"
 
         manifestPlaceholders["appLabel"] = "AR.Мир"
         manifestPlaceholders["arcoreApiKey"] = localProperties.getProperty("ARCORE_API_KEY", "")
