@@ -54,4 +54,4 @@ val homeTiles = listOf(
         route = null,
         launchDateMillis = DEFAULT_LAUNCH_DATE_MILLIS
     )
-)
+).filterNot { it.id == "ar_navigator" } // Направление приостановлено.
